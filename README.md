@@ -81,11 +81,7 @@ Do not commit real bot tokens. If a token is ever exposed, rotate it in the Disc
 
 The bot needs enough permissions in the target guild to:
 
-- View channels.
-- Read voice state.
 - Manage channels.
-- Create voice channels.
-- Delete voice channels.
 
 It also needs Discord gateway intents for guilds and voice states. The code enables those intents when creating the bot client.
 
