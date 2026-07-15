@@ -366,11 +366,15 @@ class OtherGamesBot(commands.Bot):
         try:
             await new_channel.edit(position=highest_channel.position + 1)
         except discord.DiscordException:
-            LOG.exception("Failed to position channel %s", new_channel.name)
+            log.exception("Failed to position channel %s", new_channel.name)
 
 
 def main() -> None:
-    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    log_level = logging.getLevelNamesMapping().get(log_level_name)
+    if log_level is None:
+        raise RuntimeError(f"Unknown LOG_LEVEL: {log_level_name}")
+
     config = load_config()
     bot = OtherGamesBot(config)
     bot.run(config.token, log_level=log_level, root_logger=True)
