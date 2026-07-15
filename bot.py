@@ -13,7 +13,7 @@ import discord
 from discord.ext import commands, tasks
 
 
-LOG = logging.getLogger("botchan")
+log = logging.getLogger("botchan")
 
 DEFAULT_BASE_CHANNEL_NAME = "Other Games"
 DEFAULT_MIN_CHANNELS = 3
@@ -212,7 +212,7 @@ class OtherGamesBot(commands.Bot):
         self.cleanup_empty_channels.start()
 
     async def on_ready(self) -> None:
-        LOG.info("Logged in as %s", self.user)
+        log.info("Logged in as %s", self.user)
         await self.reconcile_other_games_channels()
 
     async def on_voice_state_update(
@@ -239,12 +239,12 @@ class OtherGamesBot(commands.Bot):
 
             plan = plan_reconcile(channels, self.empty_since_by_channel_id, time.monotonic(), self.spec)
             if plan.blocked_reason is not None:
-                LOG.warning("Skipping reconcile: %s", plan.blocked_reason)
+                log.warning("Skipping reconcile: %s", plan.blocked_reason)
                 return
 
             template = self._base_channel(channels)
             if plan.create_numbers and template is None:
-                LOG.error(
+                log.error(
                     "No matching %s channel exists to use as a creation template",
                     self.config.base_name,
                 )
@@ -264,7 +264,7 @@ class OtherGamesBot(commands.Bot):
 
         plan = plan_reconcile(channels, self.empty_since_by_channel_id, time.monotonic(), self.spec)
         if plan.blocked_reason is not None:
-            LOG.warning("Skipping cleanup: %s", plan.blocked_reason)
+            log.warning("Skipping cleanup: %s", plan.blocked_reason)
             return
         await self._delete_channels(plan.delete_channel_ids)
 
@@ -313,7 +313,7 @@ class OtherGamesBot(commands.Bot):
     ) -> None:
         guild = self.target_guild()
         if guild is None:
-            LOG.error("Guild %s was not found", self.config.guild_id)
+            log.error("Guild %s was not found", self.config.guild_id)
             return
 
         try:
@@ -328,9 +328,9 @@ class OtherGamesBot(commands.Bot):
                 reason="All Other Games voice channels are occupied",
             )
             await self._position_after_highest_managed(new_channel, channels)
-            LOG.info("Created channel %s", new_channel.name)
+            log.info("Created channel %s", new_channel.name)
         except discord.DiscordException:
-            LOG.exception("Failed to create %s", self.spec.channel_name(number))
+            log.exception("Failed to create %s", self.spec.channel_name(number))
 
     async def _delete_channels(self, channel_ids: Iterable[int]) -> None:
         for channel_id in channel_ids:
@@ -341,9 +341,9 @@ class OtherGamesBot(commands.Bot):
             try:
                 await channel.delete(reason="Managed voice channel exceeded desired count")
                 self.empty_since_by_channel_id.pop(channel_id, None)
-                LOG.info("Deleted channel %s", channel.name)
+                log.info("Deleted channel %s", channel.name)
             except discord.DiscordException:
-                LOG.exception("Failed to delete channel %s", channel.name)
+                log.exception("Failed to delete channel %s", channel.name)
 
     async def _position_after_highest_managed(
         self,
