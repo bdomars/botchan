@@ -13,7 +13,7 @@ import discord
 from discord.ext import commands, tasks
 
 
-LOG = logging.getLogger("other_games_bot")
+LOG = logging.getLogger("botchan")
 
 DEFAULT_BASE_CHANNEL_NAME = "Other Games"
 DEFAULT_MIN_CHANNELS = 3
@@ -370,10 +370,10 @@ class OtherGamesBot(commands.Bot):
 
 
 def main() -> None:
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
+    log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     config = load_config()
     bot = OtherGamesBot(config)
-    bot.run(config.token)
+    bot.run(config.token, log_level=log_level, root_logger=True)
 
 
 if __name__ == "__main__":
