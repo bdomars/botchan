@@ -1,3 +1,5 @@
+![BotChan avatar](botchan.png)
+
 # BotChan
 
 BotChan is a Discord voice-channel operator for game servers that need a small pool of overflow voice channels.
