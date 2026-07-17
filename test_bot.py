@@ -3,9 +3,12 @@ from dataclasses import dataclass, field
 
 from bot import (
     ChannelSpec,
+    ManagedPool,
     desired_channel_count,
+    parse_config_data,
     parse_channel_number,
     plan_reconcile,
+    refresh_empty_timers,
 )
 
 
@@ -199,6 +202,117 @@ class OtherGamesChannelTests(unittest.TestCase):
         self.assertEqual(plan.create_numbers, [])
         self.assertEqual(plan.delete_channel_ids, [])
         self.assertEqual(plan.blocked_reason, "duplicate channel numbers: 4")
+
+
+class ConfigTests(unittest.TestCase):
+    def test_parse_config_data_supports_multiple_guilds_and_pools(self) -> None:
+        config = parse_config_data(
+            {
+                "guilds": [
+                    {
+                        "guild_id": 111,
+                        "channel_pools": [
+                            {
+                                "base_name": "Other Games",
+                                "min_channels": 2,
+                                "max_channels": 10,
+                                "idle_seconds": 300,
+                            },
+                            {
+                                "base_name": "Raid Rooms",
+                                "min_channels": 1,
+                                "max_channels": 4,
+                                "idle_seconds": 60,
+                            },
+                        ],
+                    },
+                    {
+                        "guild_id": 222,
+                        "channel_pools": [
+                            {
+                                "base_name": "Side Quests",
+                            },
+                        ],
+                    },
+                ],
+            },
+            token="token",
+        )
+
+        self.assertEqual(config.token, "token")
+        self.assertEqual(set(config.guilds), {111, 222})
+        self.assertEqual(len(config.guilds[111].channel_pools), 2)
+        self.assertEqual(config.guilds[222].channel_pools[0].base_name, "Side Quests")
+        self.assertEqual(config.guilds[222].channel_pools[0].min_channels, 3)
+
+    def test_parse_config_data_rejects_duplicate_pool_base_names_in_guild(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "duplicates another pool"):
+            parse_config_data(
+                {
+                    "guilds": [
+                        {
+                            "guild_id": 111,
+                            "channel_pools": [
+                                {"base_name": "Other Games"},
+                                {"base_name": "Other Games"},
+                            ],
+                        },
+                    ],
+                }
+            )
+
+    def test_parse_config_data_rejects_invalid_pool_bounds(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "max_channels"):
+            parse_config_data(
+                {
+                    "guilds": [
+                        {
+                            "guild_id": 111,
+                            "channel_pools": [
+                                {
+                                    "base_name": "Other Games",
+                                    "min_channels": 5,
+                                    "max_channels": 4,
+                                },
+                            ],
+                        },
+                    ],
+                }
+            )
+
+
+class ManagedPoolTests(unittest.TestCase):
+    def test_empty_timers_are_isolated_per_pool(self) -> None:
+        games_pool = ManagedPool(spec=SPEC)
+        raid_pool = ManagedPool(
+            spec=ChannelSpec(
+                base_name="Raid Rooms",
+                min_channels=1,
+                max_channels=3,
+                idle_seconds=60,
+            )
+        )
+        channels = [
+            FakeChannel(101, "Other Games", []),
+            FakeChannel(201, "Raid Rooms", []),
+        ]
+
+        refresh_empty_timers(channels, games_pool.empty_since_by_channel_id, 10.0, games_pool.spec)
+        refresh_empty_timers(channels, raid_pool.empty_since_by_channel_id, 20.0, raid_pool.spec)
+
+        self.assertEqual(games_pool.empty_since_by_channel_id, {101: 10.0})
+        self.assertEqual(raid_pool.empty_since_by_channel_id, {201: 20.0})
+
+    def test_empty_timer_refresh_removes_stale_pool_channels(self) -> None:
+        empty_since = {101: 10.0, 999: 5.0}
+        channels = [
+            FakeChannel(101, "Other Games", [object()]),
+            FakeChannel(201, "Raid Rooms", []),
+        ]
+
+        refresh_empty_timers(channels, empty_since, 20.0, SPEC)
+
+        self.assertEqual(empty_since, {})
 
 
 if __name__ == "__main__":
