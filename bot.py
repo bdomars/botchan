@@ -8,11 +8,19 @@ from pathlib import Path
 import re
 import time
 from dataclasses import dataclass, field
-from collections.abc import Iterable, Mapping, Sequence
-from typing import Protocol, cast
+from collections.abc import Iterable, Sequence
+from typing import Protocol, Self
 
 import discord
 from discord.ext import commands, tasks
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 log = logging.getLogger("botchan")
@@ -121,96 +129,87 @@ def load_config_file(path: Path) -> BotConfig:
     return parse_config_data(data, token="")
 
 
-def parse_config_data(data: object, token: str = "") -> BotConfig:
-    if not isinstance(data, Mapping):
-        raise RuntimeError("Config root must be an object")
+class ChannelPoolConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    guild_entries = data.get("guilds")
-    if not isinstance(guild_entries, list) or not guild_entries:
-        raise RuntimeError("Config must include at least one guild")
+    base_name: str = DEFAULT_BASE_CHANNEL_NAME
+    min_channels: int = Field(default=DEFAULT_MIN_CHANNELS, ge=1)
+    max_channels: int = DEFAULT_MAX_CHANNELS
+    idle_seconds: int = Field(default=DEFAULT_IDLE_SECONDS, ge=0)
 
-    guilds: dict[int, GuildSpec] = {}
-    for guild_index, guild_data in enumerate(guild_entries):
-        if not isinstance(guild_data, Mapping):
-            raise RuntimeError(f"guilds[{guild_index}] must be an object")
-        guild_mapping = cast("Mapping[str, object]", guild_data)
+    @field_validator("base_name")
+    @classmethod
+    def strip_base_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be empty")
+        return stripped
 
-        guild_id = _required_int(guild_mapping, "guild_id", f"guilds[{guild_index}]")
-        if guild_id in guilds:
-            raise RuntimeError(f"Duplicate guild_id: {guild_id}")
-
-        pool_entries = guild_mapping.get("channel_pools")
-        if not isinstance(pool_entries, list) or not pool_entries:
-            raise RuntimeError(f"guilds[{guild_index}].channel_pools must not be empty")
-
-        channel_pools: list[ChannelPoolSpec] = []
-        seen_base_names: set[str] = set()
-        for pool_index, pool_data in enumerate(pool_entries):
-            pool_path = f"guilds[{guild_index}].channel_pools[{pool_index}]"
-            if not isinstance(pool_data, Mapping):
-                raise RuntimeError(f"{pool_path} must be an object")
-            pool_mapping = cast("Mapping[str, object]", pool_data)
-
-            base_name = _optional_str(pool_mapping, "base_name", DEFAULT_BASE_CHANNEL_NAME, pool_path)
-            min_channels = _optional_int(pool_mapping, "min_channels", DEFAULT_MIN_CHANNELS, pool_path)
-            max_channels = _optional_int(pool_mapping, "max_channels", DEFAULT_MAX_CHANNELS, pool_path)
-            idle_seconds = _optional_int(pool_mapping, "idle_seconds", DEFAULT_IDLE_SECONDS, pool_path)
-
-            _validate_pool(base_name, min_channels, max_channels, idle_seconds, pool_path)
-            if base_name in seen_base_names:
-                raise RuntimeError(f"{pool_path}.base_name duplicates another pool in guild {guild_id}")
-            seen_base_names.add(base_name)
-
-            channel_pools.append(
-                ChannelPoolSpec(
-                    base_name=base_name,
-                    min_channels=min_channels,
-                    max_channels=max_channels,
-                    idle_seconds=idle_seconds,
-                )
+    @model_validator(mode="after")
+    def validate_bounds(self) -> Self:
+        if self.max_channels < self.min_channels:
+            raise ValueError(
+                "max_channels must be greater than or equal to min_channels"
             )
+        return self
 
-        guilds[guild_id] = GuildSpec(guild_id=guild_id, channel_pools=channel_pools)
+    def to_spec(self) -> ChannelPoolSpec:
+        return ChannelPoolSpec(
+            base_name=self.base_name,
+            min_channels=self.min_channels,
+            max_channels=self.max_channels,
+            idle_seconds=self.idle_seconds,
+        )
 
+
+class GuildConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    guild_id: int
+    channel_pools: list[ChannelPoolConfig] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_pool_base_names(self) -> Self:
+        seen_base_names: set[str] = set()
+        for pool in self.channel_pools:
+            if pool.base_name in seen_base_names:
+                raise ValueError(
+                    f"{pool.base_name!r} duplicates another pool in guild "
+                    f"{self.guild_id}"
+                )
+            seen_base_names.add(pool.base_name)
+        return self
+
+    def to_spec(self) -> GuildSpec:
+        return GuildSpec(
+            guild_id=self.guild_id,
+            channel_pools=[pool.to_spec() for pool in self.channel_pools],
+        )
+
+
+class FileConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    guilds: list[GuildConfig] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_unique_guild_ids(self) -> Self:
+        seen_guild_ids: set[int] = set()
+        for guild in self.guilds:
+            if guild.guild_id in seen_guild_ids:
+                raise ValueError(f"Duplicate guild_id: {guild.guild_id}")
+            seen_guild_ids.add(guild.guild_id)
+        return self
+
+
+def parse_config_data(data: object, token: str = "") -> BotConfig:
+    try:
+        config = FileConfig.model_validate(data)
+    except ValidationError as exc:
+        raise RuntimeError(f"Invalid config: {exc}") from exc
+
+    guilds = {guild.guild_id: guild.to_spec() for guild in config.guilds}
     return BotConfig(token=token, guilds=guilds)
-
-
-def _required_int(data: Mapping[str, object], key: str, path: str) -> int:
-    value = data.get(key)
-    if type(value) is not int:
-        raise RuntimeError(f"{path}.{key} must be an integer")
-    return value
-
-
-def _optional_int(data: Mapping[str, object], key: str, default: int, path: str) -> int:
-    value = data.get(key, default)
-    if type(value) is not int:
-        raise RuntimeError(f"{path}.{key} must be an integer")
-    return value
-
-
-def _optional_str(data: Mapping[str, object], key: str, default: str, path: str) -> str:
-    value = data.get(key, default)
-    if not isinstance(value, str):
-        raise RuntimeError(f"{path}.{key} must be a string")
-    return value.strip()
-
-
-def _validate_pool(
-    base_name: str,
-    min_channels: int,
-    max_channels: int,
-    idle_seconds: int,
-    path: str,
-) -> None:
-    if not base_name:
-        raise RuntimeError(f"{path}.base_name must not be empty")
-    if min_channels < 1:
-        raise RuntimeError(f"{path}.min_channels must be at least 1")
-    if max_channels < min_channels:
-        raise RuntimeError(f"{path}.max_channels must be greater than or equal to min_channels")
-    if idle_seconds < 0:
-        raise RuntimeError(f"{path}.idle_seconds must not be negative")
 
 
 def parse_channel_number(name: str, spec: ChannelPoolSpec) -> int | None:
