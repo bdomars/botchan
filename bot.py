@@ -348,7 +348,6 @@ class BotChan(commands.Bot):
         intents.voice_states = True
 
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
-        self.config = config
         self.managed_guilds = {
             guild_id: ManagedGuild(
                 guild_id=guild_id,
@@ -401,12 +400,13 @@ class BotChan(commands.Bot):
         for pool in managed_guild.pools:
             await self._reconcile_pool(guild, channels, pool)
 
-    async def _reconcile_pool(
+    def _plan_pool_changes(
         self,
+        action: str,
         guild: discord.Guild,
         channels: list[discord.VoiceChannel],
         pool: ManagedPool,
-    ) -> None:
+    ) -> ReconcilePlan | None:
         now = time.monotonic()
         refresh_empty_timers(
             channels,
@@ -423,11 +423,24 @@ class BotChan(commands.Bot):
         )
         if plan.blocked_reason is not None:
             log.warning(
-                "Skipping reconcile for guild %s pool %s: %s",
+                "Skipping %s for guild %s pool %s: %s",
+                action,
                 guild.id,
                 pool.spec.base_name,
                 plan.blocked_reason,
             )
+            return None
+
+        return plan
+
+    async def _reconcile_pool(
+        self,
+        guild: discord.Guild,
+        channels: list[discord.VoiceChannel],
+        pool: ManagedPool,
+    ) -> None:
+        plan = self._plan_pool_changes("reconcile", guild, channels, pool)
+        if plan is None:
             return
 
         template = base_channel(channels, pool.spec)
@@ -456,26 +469,8 @@ class BotChan(commands.Bot):
                     continue
                 channels = list(guild.voice_channels)
                 for pool in managed_guild.pools:
-                    now = time.monotonic()
-                    refresh_empty_timers(
-                        channels,
-                        pool.empty_since_by_channel_id,
-                        now,
-                        pool.spec,
-                    )
-                    plan = plan_reconcile(
-                        channels,
-                        pool.empty_since_by_channel_id,
-                        now,
-                        pool.spec,
-                    )
-                    if plan.blocked_reason is not None:
-                        log.warning(
-                            "Skipping cleanup for guild %s pool %s: %s",
-                            guild.id,
-                            pool.spec.base_name,
-                            plan.blocked_reason,
-                        )
+                    plan = self._plan_pool_changes("cleanup", guild, channels, pool)
+                    if plan is None:
                         continue
                     await self._delete_channels(pool, plan.delete_channel_ids)
 
