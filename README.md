@@ -50,7 +50,7 @@ Channels numbered at or below the pool's `min_channels` are protected. With `min
 
 ## Configuration
 
-The Discord token is read from an environment variable. Guild and channel-pool specs are read from a JSON config file.
+Application config is read from environment variables. Runtime guild and channel-pool specs are read from a JSON config file.
 
 Required:
 
@@ -59,9 +59,16 @@ set -gx DISCORD_TOKEN "replace-with-bot-token"
 set -gx BOTCHAN_CONFIG "botchan.config.json"
 ```
 
-`BOTCHAN_CONFIG` defaults to `botchan.config.json` when unset.
+Optional:
 
-Example config:
+```fish
+set -gx LOG_LEVEL "INFO"
+```
+
+`BOTCHAN_CONFIG` defaults to `botchan.config.json` when unset.
+`LOG_LEVEL` defaults to `INFO` when unset.
+
+Example runtime config:
 
 ```json
 {

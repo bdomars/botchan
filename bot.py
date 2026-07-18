@@ -25,12 +25,8 @@ from pydantic import (
 
 log = logging.getLogger("botchan")
 
-DEFAULT_BASE_CHANNEL_NAME = "Other Games"
-DEFAULT_MIN_CHANNELS = 3
-DEFAULT_MAX_CHANNELS = 10
-DEFAULT_IDLE_SECONDS = 10 * 60
 CLEANUP_INTERVAL_SECONDS = 30
-DEFAULT_CONFIG_PATH = "botchan.config.json"
+DEFAULT_RUNTIME_CONFIG_PATH = "botchan.config.json"
 
 
 class ManagedVoiceChannel(Protocol):
@@ -47,6 +43,11 @@ class ManagedVoiceChannel(Protocol):
 @dataclass(frozen=True)
 class BotConfig:
     token: str
+    log_level: int
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
     guilds: dict[int, GuildSpec]
 
 
@@ -95,29 +96,37 @@ class ReconcilePlan:
     blocked_reason: str | None = None
 
 
-class ConfigRepository(Protocol):
-    def load(self) -> BotConfig: ...
+class RuntimeConfigRepository(Protocol):
+    def load(self) -> RuntimeConfig: ...
 
 
-class JsonConfigRepository:
+class JsonRuntimeConfigRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def load(self) -> BotConfig:
-        return load_config_file(self.path)
+    def load(self) -> RuntimeConfig:
+        return load_runtime_config_file(self.path)
 
 
-def load_config() -> BotConfig:
+def load_bot_config() -> BotConfig:
     token = os.environ.get("DISCORD_TOKEN", "").strip()
     if not token:
         raise RuntimeError("DISCORD_TOKEN is required")
 
-    config_path = Path(os.environ.get("BOTCHAN_CONFIG", DEFAULT_CONFIG_PATH))
-    config = JsonConfigRepository(config_path).load()
-    return BotConfig(token=token, guilds=config.guilds)
+    log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    log_level = logging.getLevelNamesMapping().get(log_level_name)
+    if log_level is None:
+        raise RuntimeError(f"Unknown LOG_LEVEL: {log_level_name}")
+
+    return BotConfig(token=token, log_level=log_level)
 
 
-def load_config_file(path: Path) -> BotConfig:
+def load_runtime_config() -> RuntimeConfig:
+    config_path = Path(os.environ.get("BOTCHAN_CONFIG", DEFAULT_RUNTIME_CONFIG_PATH))
+    return JsonRuntimeConfigRepository(config_path).load()
+
+
+def load_runtime_config_file(path: Path) -> RuntimeConfig:
     try:
         with path.open(encoding="utf-8") as config_file:
             data = json.load(config_file)
@@ -126,16 +135,16 @@ def load_config_file(path: Path) -> BotConfig:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Config file is not valid JSON: {path}") from exc
 
-    return parse_config_data(data, token="")
+    return parse_runtime_config_data(data)
 
 
 class ChannelPoolConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    base_name: str = DEFAULT_BASE_CHANNEL_NAME
-    min_channels: int = Field(default=DEFAULT_MIN_CHANNELS, ge=1)
-    max_channels: int = DEFAULT_MAX_CHANNELS
-    idle_seconds: int = Field(default=DEFAULT_IDLE_SECONDS, ge=0)
+    base_name: str = "Other Games"
+    min_channels: int = Field(default=3, ge=1)
+    max_channels: int = Field(default=10, ge=1)
+    idle_seconds: int = Field(default=10 * 60, ge=0)
 
     @field_validator("base_name")
     @classmethod
@@ -187,7 +196,7 @@ class GuildConfig(BaseModel):
         )
 
 
-class FileConfig(BaseModel):
+class RuntimeConfigFile(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     guilds: list[GuildConfig] = Field(min_length=1)
@@ -202,14 +211,14 @@ class FileConfig(BaseModel):
         return self
 
 
-def parse_config_data(data: object, token: str = "") -> BotConfig:
+def parse_runtime_config_data(data: object) -> RuntimeConfig:
     try:
-        config = FileConfig.model_validate(data)
+        config = RuntimeConfigFile.model_validate(data)
     except ValidationError as exc:
         raise RuntimeError(f"Invalid config: {exc}") from exc
 
     guilds = {guild.guild_id: guild.to_spec() for guild in config.guilds}
-    return BotConfig(token=token, guilds=guilds)
+    return RuntimeConfig(guilds=guilds)
 
 
 def parse_channel_number(name: str, spec: ChannelPoolSpec) -> int | None:
@@ -344,8 +353,8 @@ def base_channel(
     )
 
 
-class OtherGamesBot(commands.Bot):
-    def __init__(self, config: BotConfig) -> None:
+class BotChan(commands.Bot):
+    def __init__(self, config: RuntimeConfig) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True
@@ -554,14 +563,10 @@ class OtherGamesBot(commands.Bot):
 
 
 def main() -> None:
-    log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
-    log_level = logging.getLevelNamesMapping().get(log_level_name)
-    if log_level is None:
-        raise RuntimeError(f"Unknown LOG_LEVEL: {log_level_name}")
-
-    config = load_config()
-    bot = OtherGamesBot(config)
-    bot.run(config.token, log_level=log_level, root_logger=True)
+    bot_config = load_bot_config()
+    runtime_config = load_runtime_config()
+    bot = BotChan(runtime_config)
+    bot.run(bot_config.token, log_level=bot_config.log_level, root_logger=True)
 
 
 if __name__ == "__main__":
