@@ -96,18 +96,6 @@ class ReconcilePlan:
     blocked_reason: str | None = None
 
 
-class RuntimeConfigRepository(Protocol):
-    def load(self) -> RuntimeConfig: ...
-
-
-class JsonRuntimeConfigRepository:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def load(self) -> RuntimeConfig:
-        return load_runtime_config_file(self.path)
-
-
 def load_bot_config() -> BotConfig:
     token = os.environ.get("DISCORD_TOKEN", "").strip()
     if not token:
@@ -123,7 +111,7 @@ def load_bot_config() -> BotConfig:
 
 def load_runtime_config() -> RuntimeConfig:
     config_path = Path(os.environ.get("BOTCHAN_CONFIG", DEFAULT_RUNTIME_CONFIG_PATH))
-    return JsonRuntimeConfigRepository(config_path).load()
+    return load_runtime_config_file(config_path)
 
 
 def load_runtime_config_file(path: Path) -> RuntimeConfig:
