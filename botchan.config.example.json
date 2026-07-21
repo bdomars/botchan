@@ -1,0 +1,21 @@
+{
+  "guilds": [
+    {
+      "guild_id": 123456789012345678,
+      "channel_pools": [
+        {
+          "base_name": "Other Games",
+          "min_channels": 3,
+          "max_channels": 10,
+          "idle_seconds": 600
+        },
+        {
+          "base_name": "Raid Rooms",
+          "min_channels": 1,
+          "max_channels": 5,
+          "idle_seconds": 600
+        }
+      ]
+    }
+  ]
+}

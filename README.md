@@ -4,11 +4,11 @@
 
 BotChan is a Discord voice-channel operator for game servers that need a small pool of overflow voice channels.
 
-The original use case is an "Other Games" area: keep a minimum number of voice channels available, create more when groups fill them up, and remove unused extras later. The bot works like a small reconciliation loop: it observes the guild's current voice channels, compares them to the desired state, and applies the smallest create/delete actions needed to converge.
+The original use case is an "Other Games" area: keep a minimum number of voice channels available, create more when groups fill them up, and remove unused extras later. The bot works like a small reconciliation loop: it observes each configured guild's current voice channels, compares them to the desired state for each configured channel pool, and applies the smallest create/delete actions needed to converge.
 
 ## How It Works
 
-The bot manages voice channels whose names match a configured base name:
+The bot manages voice channels whose names match a configured channel-pool base name:
 
 ```text
 🎮│Other Games
@@ -22,7 +22,7 @@ The desired number of channels is:
 occupied managed channels + 1 spare channel
 ```
 
-That value is clamped between `OTHER_GAMES_MIN_CHANNELS` and `OTHER_GAMES_MAX_CHANNELS`.
+That value is clamped between the pool's `min_channels` and `max_channels`.
 
 For example, with `min=3` and `max=10`:
 
@@ -31,7 +31,7 @@ For example, with `min=3` and `max=10`:
 - If channels 1 through 4 are occupied, the bot creates channel 5.
 - If extra channels become empty, the bot deletes the highest-numbered empty extras after the idle timeout.
 
-Channels numbered at or below `OTHER_GAMES_MIN_CHANNELS` are protected. With `min=3`, the bot must never delete:
+Channels numbered at or below the pool's `min_channels` are protected. With `min=3`, the bot must never delete:
 
 ```text
 🎮│Other Games
@@ -50,23 +50,51 @@ Channels numbered at or below `OTHER_GAMES_MIN_CHANNELS` are protected. With `mi
 
 ## Configuration
 
-Configuration is read from environment variables.
+Application config is read from environment variables. Runtime guild and channel-pool specs are read from a JSON config file.
 
 Required:
 
 ```fish
 set -gx DISCORD_TOKEN "replace-with-bot-token"
-set -gx GUILD_ID "replace-with-guild-id"
+set -gx BOTCHAN_CONFIG "botchan.config.json"
 ```
 
 Optional:
 
 ```fish
-set -gx OTHER_GAMES_BASE_NAME "🎮│Other Games"
-set -gx OTHER_GAMES_MIN_CHANNELS "3"
-set -gx OTHER_GAMES_MAX_CHANNELS "10"
-set -gx OTHER_GAMES_IDLE_SECONDS "300"
+set -gx LOG_LEVEL "INFO"
 ```
+
+`BOTCHAN_CONFIG` defaults to `botchan.config.json` when unset.
+`LOG_LEVEL` defaults to `INFO` when unset.
+
+Example runtime config:
+
+```json
+{
+  "guilds": [
+    {
+      "guild_id": 123456789012345678,
+      "channel_pools": [
+        {
+          "base_name": "🎮│Other Games",
+          "min_channels": 3,
+          "max_channels": 10,
+          "idle_seconds": 300
+        },
+        {
+          "base_name": "Raid Rooms",
+          "min_channels": 1,
+          "max_channels": 5,
+          "idle_seconds": 600
+        }
+      ]
+    }
+  ]
+}
+```
+
+See `botchan.config.example.json` for a starter file.
 
 `env.fish` contains a fish shell template for local testing:
 
@@ -104,6 +132,6 @@ uv run python -m unittest -v
 
 ## Important Limitations
 
-- The bot currently manages one guild, selected by `GUILD_ID`.
+- The bot only manages guilds listed in the config file.
 - The naming scheme is deterministic: base channel name for channel 1, then `#N` suffixes for channels 2 and up.
 - The bot needs at least one existing matching channel to use as a template for creating more channels.
