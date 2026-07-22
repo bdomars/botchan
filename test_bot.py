@@ -305,6 +305,17 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.token, "token")
         self.assertEqual(config.log_level, logging.INFO)
+        self.assertEqual(config.git_rev, "unknown")
+
+    def test_load_bot_config_reads_git_revision(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"DISCORD_TOKEN": "token", "BOTCHAN_GIT_REV": "abc123"},
+            clear=True,
+        ):
+            config = load_bot_config()
+
+        self.assertEqual(config.git_rev, "abc123")
 
     def test_load_bot_config_rejects_missing_token(self) -> None:
         with patch.dict("os.environ", {}, clear=True):

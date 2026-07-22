@@ -44,6 +44,7 @@ class ManagedVoiceChannel(Protocol):
 class BotConfig:
     token: str
     log_level: int
+    git_rev: str
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,8 @@ def load_bot_config() -> BotConfig:
     if log_level is None:
         raise RuntimeError(f"Unknown LOG_LEVEL: {log_level_name}")
 
-    return BotConfig(token=token, log_level=log_level)
+    git_rev = os.environ.get("BOTCHAN_GIT_REV", "unknown")
+    return BotConfig(token=token, log_level=log_level, git_rev=git_rev)
 
 
 def load_runtime_config() -> RuntimeConfig:
@@ -548,6 +550,7 @@ class BotChan(commands.Bot):
 def main() -> None:
     bot_config = load_bot_config()
     runtime_config = load_runtime_config()
+    print(f"Git revision: {bot_config.git_rev}", flush=True)
     bot = BotChan(runtime_config)
     bot.run(bot_config.token, log_level=bot_config.log_level, root_logger=True)
 
