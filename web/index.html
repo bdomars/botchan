@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="description" content="Build a BotChan single-guild channel pool specification.">
+        <title>BotChan Guild Editor</title>
+        <link rel="stylesheet" href="styles.css">
+        <script
+            defer
+            src="https://cdn.jsdelivr.net/npm/vue@3.5.40/dist/vue.global.prod.js"
+            onerror="document.getElementById('boot-error').hidden = false"
+        ></script>
+        <script defer src="config-core.js"></script>
+        <script defer src="app.js"></script>
+    </head>
+    <body>
+        <div class="background-orb orb-one"></div>
+        <div class="background-orb orb-two"></div>
+
+        <noscript>
+            <p class="boot-error">JavaScript is required to use the BotChan guild editor.</p>
+        </noscript>
+        <p id="boot-error" class="boot-error" hidden>
+            The editor could not start. Check your network connection so Vue can load from the CDN.
+        </p>
+
+        <main id="app" v-cloak>
+            <header class="site-header">
+                <div class="brand">
+                    <img src="../botchan.png" alt="" class="brand-avatar">
+                    <div>
+                        <p class="eyebrow">Configuration workshop</p>
+                        <h1>BotChan Guild Editor</h1>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="button button-quiet" type="button" @click="resetDraft">
+                        Reset
+                    </button>
+                </div>
+            </header>
+
+            <section class="intro" aria-labelledby="intro-title">
+                <div>
+                    <p class="eyebrow">One guild at a time</p>
+                    <h2 id="intro-title">Shape your voice channel pools.</h2>
+                    <p>
+                        Tune the limits and cleanup timing, then save the validated guild
+                        configuration directly to BotChan.
+                    </p>
+                </div>
+                <div class="status-chip" :class="{ valid: validation.valid }">
+                    <span class="status-dot" aria-hidden="true"></span>
+                    {{ validation.valid ? "Ready to save" : "Draft needs attention" }}
+                </div>
+            </section>
+
+            <section class="guild-editor" aria-label="Guild settings">
+                    <article class="panel guild-panel">
+                        <div class="panel-heading">
+                            <div>
+                                <p class="section-number">01</p>
+                                <h2>Guild</h2>
+                            </div>
+                            <p>The Discord server BotChan will manage.</p>
+                        </div>
+                        <label class="field">
+                            <span class="field-label">Guild</span>
+                            <select
+                                v-model="draft.guild_id"
+                                :aria-invalid="Boolean(validation.errors.guild_id)"
+                                aria-describedby="guild-id-help guild-id-error"
+                            >
+                                <option disabled value="">Select a guild</option>
+                                <option
+                                    v-for="guild in guildOptions"
+                                    :key="guild.id"
+                                    :value="guild.id"
+                                >{{ guild.name }} ({{ guild.id }})</option>
+                            </select>
+                            <span id="guild-id-help" class="field-help">
+                                Choose the Discord server BotChan will manage.
+                            </span>
+                            <span
+                                v-if="validation.errors.guild_id"
+                                id="guild-id-error"
+                                class="field-error"
+                                role="alert"
+                            >
+                                {{ validation.errors.guild_id }}
+                            </span>
+                        </label>
+                    </article>
+
+                    <div class="pools-heading">
+                        <div>
+                            <p class="section-number">02</p>
+                            <h2>Channel pools</h2>
+                        </div>
+                        <button class="button button-primary" type="button" @click="addPool">
+                            <span aria-hidden="true">＋</span> Add pool
+                        </button>
+                    </div>
+
+                    <p
+                        v-if="validation.errors.channel_pools"
+                        class="field-error standalone-error"
+                        role="alert"
+                    >
+                        {{ validation.errors.channel_pools }}
+                    </p>
+
+                    <article
+                        v-for="(pool, index) in draft.channel_pools"
+                        :key="pool.client_id"
+                        class="panel pool-card"
+                    >
+                        <div class="pool-card-heading">
+                            <div>
+                                <span class="pool-index">{{ String(index + 1).padStart(2, "0") }}</span>
+                                <h3>{{ pool.base_name.trim() || "Untitled pool" }}</h3>
+                            </div>
+                            <div class="icon-actions">
+                                <button
+                                    class="icon-button"
+                                    type="button"
+                                    :disabled="index === 0"
+                                    :aria-label="'Move ' + (pool.base_name || 'pool') + ' up'"
+                                    title="Move up"
+                                    @click="movePool(index, -1)"
+                                >↑</button>
+                                <button
+                                    class="icon-button"
+                                    type="button"
+                                    :disabled="index === draft.channel_pools.length - 1"
+                                    :aria-label="'Move ' + (pool.base_name || 'pool') + ' down'"
+                                    title="Move down"
+                                    @click="movePool(index, 1)"
+                                >↓</button>
+                                <button
+                                    class="icon-button danger"
+                                    type="button"
+                                    :disabled="draft.channel_pools.length === 1"
+                                    :aria-label="'Remove ' + (pool.base_name || 'pool')"
+                                    title="Remove pool"
+                                    @click="removePool(index)"
+                                >×</button>
+                            </div>
+                        </div>
+
+                        <div class="field-grid">
+                            <label class="field field-wide">
+                                <span class="field-label">Base channel name</span>
+                                <input
+                                    v-model="pool.base_name"
+                                    type="text"
+                                    autocomplete="off"
+                                    placeholder="Other Games"
+                                    :aria-invalid="Boolean(validation.errors.pools[index]?.base_name)"
+                                >
+                                <span
+                                    v-if="validation.errors.pools[index]?.base_name"
+                                    class="field-error"
+                                    role="alert"
+                                >{{ validation.errors.pools[index].base_name }}</span>
+                            </label>
+
+                            <label class="field">
+                                <span class="field-label">Minimum channels</span>
+                                <input
+                                    v-model="pool.min_channels"
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    inputmode="numeric"
+                                    :aria-invalid="Boolean(validation.errors.pools[index]?.min_channels)"
+                                >
+                                <span
+                                    v-if="validation.errors.pools[index]?.min_channels"
+                                    class="field-error"
+                                    role="alert"
+                                >{{ validation.errors.pools[index].min_channels }}</span>
+                            </label>
+
+                            <label class="field">
+                                <span class="field-label">Maximum channels</span>
+                                <input
+                                    v-model="pool.max_channels"
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    inputmode="numeric"
+                                    :aria-invalid="Boolean(validation.errors.pools[index]?.max_channels)"
+                                >
+                                <span
+                                    v-if="validation.errors.pools[index]?.max_channels"
+                                    class="field-error"
+                                    role="alert"
+                                >{{ validation.errors.pools[index].max_channels }}</span>
+                            </label>
+
+                            <div class="field field-wide">
+                                <span class="field-label" :id="'idle-label-' + pool.client_id">
+                                    Empty channel timeout
+                                </span>
+                                <div
+                                    class="duration-input"
+                                    role="group"
+                                    :aria-labelledby="'idle-label-' + pool.client_id"
+                                >
+                                    <input
+                                        v-model="pool.idle_value"
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        inputmode="decimal"
+                                        :aria-invalid="Boolean(validation.errors.pools[index]?.idle_seconds)"
+                                    >
+                                    <select
+                                        :value="pool.idle_unit"
+                                        aria-label="Timeout unit"
+                                        @change="changeIdleUnit(pool, $event.target.value)"
+                                    >
+                                        <option value="seconds">seconds</option>
+                                        <option value="minutes">minutes</option>
+                                        <option value="hours">hours</option>
+                                    </select>
+                                </div>
+                                <span class="field-help">
+                                    Empty extras are removed after this delay. Zero removes them immediately.
+                                </span>
+                                <span
+                                    v-if="validation.errors.pools[index]?.idle_seconds"
+                                    class="field-error"
+                                    role="alert"
+                                >{{ validation.errors.pools[index].idle_seconds }}</span>
+                            </div>
+                        </div>
+
+                        <div
+                            class="channel-preview"
+                            aria-label="Channel pool preview. Solid channels are always kept; dashed channels are temporary extras."
+                        >
+                            <span
+                                v-for="channel in exampleChannels(pool)"
+                                :key="channel.number"
+                                :class="{ extra: channel.extra }"
+                            >🔊 {{ channel.name }}</span>
+                        </div>
+                    </article>
+
+                    <div class="panel save-panel">
+                        <div class="save-copy">
+                            <h2>Save guild settings</h2>
+                            <p>Apply these channel pool settings to BotChan.</p>
+                            <p v-if="saveError" class="save-error" role="alert">
+                                {{ saveError }}
+                            </p>
+                        </div>
+                        <button
+                            class="button button-primary"
+                            type="button"
+                            :disabled="!validation.valid || isSaving"
+                            @click="saveGuild"
+                        >{{ isSaving ? "Saving…" : "Save" }}</button>
+                    </div>
+            </section>
+
+            <div v-if="toast" class="toast" role="status">{{ toast }}</div>
+        </main>
+    </body>
+</html>

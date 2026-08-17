@@ -105,6 +105,30 @@ uv run python main.py
 
 Do not commit real bot tokens. If a token is ever exposed, rotate it in the Discord Developer Portal.
 
+## Guild Config Editor
+
+The editor in [`web/index.html`](web/index.html) provides a visual way to create and
+validate one guild's channel-pool settings. It must be served by the application
+so it can save to the same-origin API. The page loads Vue from a CDN, so it also
+needs a network connection.
+
+Clicking **Save** sends the guild object to `POST /api/guildspec` with an
+`application/json` content type:
+
+```json
+{
+  "guild_id": 123456789012345678,
+  "channel_pools": [
+    {
+      "base_name": "Other Games",
+      "min_channels": 3,
+      "max_channels": 10,
+      "idle_seconds": 600
+    }
+  ]
+}
+```
+
 ## Discord Permissions
 
 The bot needs enough permissions in the target guild to:
@@ -128,6 +152,7 @@ Run checks:
 uv run ty check
 uv run python -m py_compile bot.py test_bot.py main.py
 uv run python -m unittest -v
+node --test web/test_config_core.js
 ```
 
 ## Important Limitations
