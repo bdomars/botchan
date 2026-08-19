@@ -19,13 +19,12 @@ function validDraft() {
     };
 }
 
-test("validates and serializes a guild without rounding its snowflake", () => {
+test("validates and serializes a guild snowflake as an exact string", () => {
     const json = core.serializeGuild(validDraft());
 
-    assert.match(json, /"guild_id": 123456789012345678/);
-    assert.doesNotMatch(json, /"guild_id": "/);
+    assert.equal(JSON.parse(json).guild_id, "123456789012345678");
     assert.match(json, /"idle_seconds": 600/);
-    assert.equal(json.split("\n")[1], '  "guild_id": 123456789012345678,');
+    assert.equal(json.split("\n")[1], '  "guild_id": "123456789012345678",');
 });
 
 test("rejects duplicate pool names and invalid bounds", () => {
@@ -58,4 +57,13 @@ test("converts supported durations to exact integer seconds", () => {
     assert.deepEqual(core.secondsToDisplay(7200), { value: 2, unit: "hours" });
     assert.deepEqual(core.secondsToDisplay(600), { value: 10, unit: "minutes" });
     assert.deepEqual(core.secondsToDisplay(90), { value: 90, unit: "seconds" });
+});
+
+test("new guilds start empty and draft fingerprints ignore client ids", () => {
+    assert.deepEqual(core.defaultDraft(), { guild_id: "", channel_pools: [] });
+    const first = validDraft();
+    const second = structuredClone(first);
+    first.channel_pools[0].client_id = 1;
+    second.channel_pools[0].client_id = 99;
+    assert.equal(core.draftFingerprint(first), core.draftFingerprint(second));
 });

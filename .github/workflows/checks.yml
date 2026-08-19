@@ -1,0 +1,48 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: botchan_test
+          POSTGRES_USER: botchan
+          POSTGRES_PASSWORD: botchan
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U botchan"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://botchan:botchan@localhost:5432/botchan_test
+      BOTCHAN_TEST_DATABASE_URL: postgresql+asyncpg://botchan:botchan@localhost:5432/botchan_test
+      DISCORD_CLIENT_ID: "123456789012345678"
+      DISCORD_CLIENT_SECRET: test-client-secret
+      DISCORD_TOKEN: test-bot-token
+      DISCORD_REDIRECT_URI: http://localhost:8000/auth/discord/callback
+      PUBLIC_BASE_URL: http://localhost:8000
+      SESSION_SECRET: test-session-secret
+      TOKEN_ENCRYPTION_KEY: 7JvP0p6UqcF1wbGgDPf8KmyDVeOt6sdq8s_Ro9T15Vc=
+      SECURE_COOKIES: "false"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+      - run: uv sync --frozen
+      - run: uv run alembic upgrade head
+      - run: uv run ty check
+      - run: uv run python -m py_compile bot.py botchan_config.py botchan_api/*.py test_bot.py test_api.py main.py
+      - run: uv run python -m unittest -v
+      - run: node --test web/test_config_core.js

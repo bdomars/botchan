@@ -5,6 +5,20 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "alembic>=1.16",
+    "asyncpg>=0.30",
+    "cryptography>=45",
     "discord-py>=2.7.1",
+    "fastapi>=0.116",
+    "httpx>=0.28",
+    "itsdangerous>=2.2",
     "pydantic>=2",
+    "sqlalchemy[asyncio]>=2.0",
+    "typing-extensions>=4.14",
+    "uvicorn>=0.35",
+]
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.1a20",
 ]

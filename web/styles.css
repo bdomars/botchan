@@ -52,6 +52,52 @@ button {
     display: none;
 }
 
+.user-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: var(--muted);
+    font-weight: 700;
+}
+
+.user-chip img {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+}
+
+.login-panel,
+.state-panel,
+.install-panel {
+    max-width: 760px;
+    margin: 4rem auto;
+    padding: clamp(1.5rem, 4vw, 3rem);
+}
+
+.login-panel .button {
+    display: inline-flex;
+    margin-top: 1rem;
+    text-decoration: none;
+}
+
+.install-panel {
+    max-width: none;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 2rem;
+}
+
+.install-panel .button {
+    flex: none;
+    text-decoration: none;
+}
+
+.page-error {
+    margin: 1rem 0;
+}
+
 .background-orb {
     position: fixed;
     z-index: -1;
@@ -578,7 +624,8 @@ select[aria-invalid="true"] {
 
     .guild-panel,
     .pool-card,
-    .save-panel {
+    .save-panel,
+    .install-panel {
         padding: 18px;
     }
 
@@ -591,7 +638,8 @@ select[aria-invalid="true"] {
         text-align: left;
     }
 
-    .save-panel {
+    .save-panel,
+    .install-panel {
         align-items: stretch;
         flex-direction: column;
     }

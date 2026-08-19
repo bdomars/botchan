@@ -5,21 +5,18 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 import time
 from dataclasses import dataclass, field
 from collections.abc import Iterable, Sequence
-from typing import Protocol, Self
+from typing import Protocol
 
 import discord
 from discord.ext import commands, tasks
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    ValidationError,
-    field_validator,
-    model_validator,
+from botchan_config import (
+    ChannelPoolSpec,
+    GuildSpec,
+    RuntimeConfig,
+    parse_runtime_config_data,
 )
 
 
@@ -45,34 +42,6 @@ class BotConfig:
     token: str
     log_level: int
     git_rev: str
-
-
-@dataclass(frozen=True)
-class RuntimeConfig:
-    guilds: dict[int, GuildSpec]
-
-
-@dataclass(frozen=True)
-class GuildSpec:
-    guild_id: int
-    channel_pools: list[ChannelPoolSpec]
-
-
-@dataclass(frozen=True)
-class ChannelPoolSpec:
-    base_name: str
-    min_channels: int
-    max_channels: int
-    idle_seconds: int
-
-    @property
-    def channel_re(self) -> re.Pattern[str]:
-        return re.compile(rf"^{re.escape(self.base_name)}(?: #(?P<number>\d+))?$")
-
-    def channel_name(self, number: int) -> str:
-        if number == 1:
-            return self.base_name
-        return f"{self.base_name} #{number}"
 
 
 ChannelSpec = ChannelPoolSpec
@@ -126,89 +95,6 @@ def load_runtime_config_file(path: Path) -> RuntimeConfig:
         raise RuntimeError(f"Config file is not valid JSON: {path}") from exc
 
     return parse_runtime_config_data(data)
-
-
-class ChannelPoolConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    base_name: str = "Other Games"
-    min_channels: int = Field(default=3, ge=1)
-    max_channels: int = Field(default=10, ge=1)
-    idle_seconds: int = Field(default=10 * 60, ge=0)
-
-    @field_validator("base_name")
-    @classmethod
-    def strip_base_name(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("must not be empty")
-        return stripped
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> Self:
-        if self.max_channels < self.min_channels:
-            raise ValueError(
-                "max_channels must be greater than or equal to min_channels"
-            )
-        return self
-
-    def to_spec(self) -> ChannelPoolSpec:
-        return ChannelPoolSpec(
-            base_name=self.base_name,
-            min_channels=self.min_channels,
-            max_channels=self.max_channels,
-            idle_seconds=self.idle_seconds,
-        )
-
-
-class GuildConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    guild_id: int
-    channel_pools: list[ChannelPoolConfig] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_unique_pool_base_names(self) -> Self:
-        seen_base_names: set[str] = set()
-        for pool in self.channel_pools:
-            if pool.base_name in seen_base_names:
-                raise ValueError(
-                    f"{pool.base_name!r} duplicates another pool in guild "
-                    f"{self.guild_id}"
-                )
-            seen_base_names.add(pool.base_name)
-        return self
-
-    def to_spec(self) -> GuildSpec:
-        return GuildSpec(
-            guild_id=self.guild_id,
-            channel_pools=[pool.to_spec() for pool in self.channel_pools],
-        )
-
-
-class RuntimeConfigFile(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    guilds: list[GuildConfig] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_unique_guild_ids(self) -> Self:
-        seen_guild_ids: set[int] = set()
-        for guild in self.guilds:
-            if guild.guild_id in seen_guild_ids:
-                raise ValueError(f"Duplicate guild_id: {guild.guild_id}")
-            seen_guild_ids.add(guild.guild_id)
-        return self
-
-
-def parse_runtime_config_data(data: object) -> RuntimeConfig:
-    try:
-        config = RuntimeConfigFile.model_validate(data)
-    except ValidationError as exc:
-        raise RuntimeError(f"Invalid config: {exc}") from exc
-
-    guilds = {guild.guild_id: guild.to_spec() for guild in config.guilds}
-    return RuntimeConfig(guilds=guilds)
 
 
 def parse_channel_number(name: str, spec: ChannelPoolSpec) -> int | None:

@@ -1,0 +1,18 @@
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS builder
+
+WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+FROM python:3.14-slim-bookworm
+WORKDIR /app
+ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin botchan
+COPY --from=builder /app/.venv /app/.venv
+COPY alembic.ini botchan_config.py botchan.png ./
+COPY migrations ./migrations
+COPY botchan_api ./botchan_api
+COPY web ./web
+USER 10001:10001
+ENTRYPOINT ["uvicorn", "botchan_api.main:app", "--host", "0.0.0.0", "--port", "8000"]

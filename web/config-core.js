@@ -7,7 +7,6 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
     "use strict";
 
-    const GUILD_ID_MARKER = "__BOTCHAN_GUILD_ID__:";
     const POOL_DEFAULTS = Object.freeze({
         base_name: "Other Games",
         min_channels: 3,
@@ -23,8 +22,23 @@
     function defaultDraft() {
         return {
             guild_id: "",
-            channel_pools: [poolToDraft(POOL_DEFAULTS)],
+            channel_pools: [],
         };
+    }
+
+    function draftFingerprint(draft) {
+        return JSON.stringify({
+            guild_id: String(draft.guild_id || ""),
+            channel_pools: (draft.channel_pools || []).map(function (pool) {
+                return {
+                    base_name: String(pool.base_name),
+                    min_channels: String(pool.min_channels),
+                    max_channels: String(pool.max_channels),
+                    idle_value: String(pool.idle_value),
+                    idle_unit: String(pool.idle_unit),
+                };
+            }),
+        });
     }
 
     function poolToDraft(pool) {
@@ -162,18 +176,13 @@
             throw new Error("Cannot serialize an invalid guild draft.");
         }
 
-        const markerValue = GUILD_ID_MARKER + validation.value.guild_id;
-        const json = JSON.stringify(
+        return JSON.stringify(
             {
-                guild_id: markerValue,
+                guild_id: validation.value.guild_id,
                 channel_pools: validation.value.channel_pools,
             },
             null,
             2,
-        );
-        return json.replace(
-            JSON.stringify(markerValue),
-            validation.value.guild_id,
         );
     }
 
@@ -181,6 +190,7 @@
         POOL_DEFAULTS: POOL_DEFAULTS,
         UNIT_SECONDS: UNIT_SECONDS,
         defaultDraft: defaultDraft,
+        draftFingerprint: draftFingerprint,
         durationToSeconds: durationToSeconds,
         poolToDraft: poolToDraft,
         secondsToDisplay: secondsToDisplay,

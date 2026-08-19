@@ -28,20 +28,49 @@
         <main id="app" v-cloak>
             <header class="site-header">
                 <div class="brand">
-                    <img src="../botchan.png" alt="" class="brand-avatar">
+                    <img src="/botchan.png" alt="" class="brand-avatar">
                     <div>
                         <p class="eyebrow">Configuration workshop</p>
                         <h1>BotChan Guild Editor</h1>
                     </div>
                 </div>
                 <div class="header-actions">
-                    <button class="button button-quiet" type="button" @click="resetDraft">
+                    <span v-if="session?.authenticated" class="user-chip">
+                        <img v-if="session.user.avatar_url" :src="session.user.avatar_url" alt="">
+                        {{ session.user.name }}
+                    </span>
+                    <button
+                        v-if="session?.authenticated && selectedGuild?.installed"
+                        class="button button-quiet"
+                        type="button"
+                        :disabled="!isDirty"
+                        @click="resetDraft"
+                    >
                         Reset
                     </button>
+                    <button
+                        v-if="session?.authenticated"
+                        class="button button-quiet"
+                        type="button"
+                        @click="logout"
+                    >Log out</button>
                 </div>
             </header>
 
-            <section class="intro" aria-labelledby="intro-title">
+            <section v-if="authLoading" class="panel state-panel" aria-live="polite">
+                <h2>Loading BotChan…</h2>
+            </section>
+
+            <section v-else-if="!session?.authenticated" class="panel login-panel">
+                <p class="eyebrow">Discord authentication</p>
+                <h2>Configure BotChan for your servers.</h2>
+                <p>Log in to see Discord servers where you have permission to manage the server.</p>
+                <a class="button button-primary" href="/auth/discord">Log in with Discord</a>
+            </section>
+
+            <p v-if="pageError" class="save-error page-error" role="alert">{{ pageError }}</p>
+
+            <section v-if="session?.authenticated" class="intro" aria-labelledby="intro-title">
                 <div>
                     <p class="eyebrow">One guild at a time</p>
                     <h2 id="intro-title">Shape your voice channel pools.</h2>
@@ -56,7 +85,7 @@
                 </div>
             </section>
 
-            <section class="guild-editor" aria-label="Guild settings">
+            <section v-if="session?.authenticated" class="guild-editor" aria-label="Guild settings">
                     <article class="panel guild-panel">
                         <div class="panel-heading">
                             <div>
@@ -68,16 +97,18 @@
                         <label class="field">
                             <span class="field-label">Guild</span>
                             <select
-                                v-model="draft.guild_id"
+                                :value="draft.guild_id"
+                                :disabled="guildLoading"
                                 :aria-invalid="Boolean(validation.errors.guild_id)"
                                 aria-describedby="guild-id-help guild-id-error"
+                                @change="selectGuild($event)"
                             >
                                 <option disabled value="">Select a guild</option>
                                 <option
                                     v-for="guild in guildOptions"
                                     :key="guild.id"
                                     :value="guild.id"
-                                >{{ guild.name }} ({{ guild.id }})</option>
+                                >{{ guild.name }}{{ guild.installed ? "" : " — BotChan not installed" }} ({{ guild.id }})</option>
                             </select>
                             <span id="guild-id-help" class="field-help">
                                 Choose the Discord server BotChan will manage.
@@ -92,6 +123,17 @@
                             </span>
                         </label>
                     </article>
+
+                    <article v-if="selectedGuild && !selectedGuild.installed" class="panel install-panel">
+                        <div>
+                            <p class="eyebrow">Installation required</p>
+                            <h2>Add BotChan to {{ selectedGuild.name }}</h2>
+                            <p>BotChan needs permission to manage voice channels before this server can be configured.</p>
+                        </div>
+                        <a class="button button-primary" :href="selectedGuild.install_url">Add BotChan</a>
+                    </article>
+
+                    <template v-if="selectedGuild?.installed">
 
                     <div class="pools-heading">
                         <div>
@@ -141,7 +183,6 @@
                                 <button
                                     class="icon-button danger"
                                     type="button"
-                                    :disabled="draft.channel_pools.length === 1"
                                     :aria-label="'Remove ' + (pool.base_name || 'pool')"
                                     title="Remove pool"
                                     @click="removePool(index)"
@@ -265,6 +306,7 @@
                             @click="saveGuild"
                         >{{ isSaving ? "Saving…" : "Save" }}</button>
                     </div>
+                    </template>
             </section>
 
             <div v-if="toast" class="toast" role="status">{{ toast }}</div>

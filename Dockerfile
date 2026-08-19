@@ -28,7 +28,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin botchan
 
 COPY --from=builder /app/.venv /app/.venv
-COPY main.py bot.py ./
+COPY main.py bot.py botchan_config.py ./
 
 USER 10001:10001
 

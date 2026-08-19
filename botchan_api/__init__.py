@@ -1,0 +1,2 @@
+"""BotChan configuration API."""
+

@@ -105,29 +105,49 @@ uv run python main.py
 
 Do not commit real bot tokens. If a token is ever exposed, rotate it in the Discord Developer Portal.
 
-## Guild Config Editor
+## Guild Configuration API and Editor
 
-The editor in [`web/index.html`](web/index.html) provides a visual way to create and
-validate one guild's channel-pool settings. It must be served by the application
-so it can save to the same-origin API. The page loads Vue from a CDN, so it also
-needs a network connection.
+The separate FastAPI service serves the editor, authenticates administrators through
+Discord OAuth2, lists servers where they have Manage Server permission, and stores
+revisioned guild configuration in PostgreSQL. The page loads Vue from a CDN, so the
+browser also needs a network connection.
 
-Clicking **Save** sends the guild object to `POST /api/guildspec` with an
-`application/json` content type:
+Required API environment variables:
 
-```json
-{
-  "guild_id": 123456789012345678,
-  "channel_pools": [
-    {
-      "base_name": "Other Games",
-      "min_channels": 3,
-      "max_channels": 10,
-      "idle_seconds": 600
-    }
-  ]
-}
+```text
+DATABASE_URL=postgresql+asyncpg://botchan:botchan@localhost/botchan
+DISCORD_CLIENT_ID=...
+DISCORD_CLIENT_SECRET=...
+DISCORD_TOKEN=...
+DISCORD_REDIRECT_URI=http://localhost:8000/auth/discord/callback
+PUBLIC_BASE_URL=http://localhost:8000
+SESSION_SECRET=...
+TOKEN_ENCRYPTION_KEY=...
+SECURE_COOKIES=false
 ```
+
+Generate the encryption key with:
+
+```bash
+uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+```
+
+For local development, export the secrets above and run:
+
+```bash
+docker compose up --build
+```
+
+Or apply migrations and launch the API directly:
+
+```bash
+uv run alembic upgrade head
+uv run uvicorn botchan_api.main:app --reload
+```
+
+Configuration saves use optimistic ETags and emit a PostgreSQL notification on
+`botchan_config_changed` containing the guild ID and new revision. The database is
+the source of truth; notifications are only reload hints and are not a durable queue.
 
 ## Discord Permissions
 
@@ -150,7 +170,7 @@ Run checks:
 
 ```bash
 uv run ty check
-uv run python -m py_compile bot.py test_bot.py main.py
+uv run python -m py_compile bot.py botchan_config.py botchan_api/*.py test_bot.py test_api.py main.py
 uv run python -m unittest -v
 node --test web/test_config_core.js
 ```
