@@ -186,7 +186,7 @@
                 const limit = Math.min(validMax && maximum >= minimum ? maximum : validMin ? minimum : maximum, 100);
                 return Array.from({ length: limit }, (_, index) => ({
                     number: index + 1,
-                    name: baseName + " #" + (index + 1),
+                    name: index == 0 ? baseName : baseName + " #" + (index + 1),
                     extra: validMin && index + 1 > minimum,
                 }));
             },
