@@ -8,6 +8,7 @@ from botchan_api.settings import Settings
 
 
 DISCORD_API = "https://discord.com/api/v10"
+MAX_ERROR_BODY_LENGTH = 4096
 
 
 class DiscordAPIError(RuntimeError):
@@ -21,7 +22,10 @@ class DiscordClient:
 
     async def _json(self, response: httpx.Response) -> Any:
         if response.is_error:
-            raise DiscordAPIError(f"Discord returned HTTP {response.status_code}")
+            body = response.text[:MAX_ERROR_BODY_LENGTH]
+            raise DiscordAPIError(
+                f"Discord returned HTTP {response.status_code}: {body}"
+            )
         return response.json()
 
     async def exchange_code(self, code: str) -> dict[str, Any]:
@@ -51,7 +55,10 @@ class DiscordClient:
             auth=(self.settings.discord_client_id, self.settings.discord_client_secret),
         )
         if response.is_error:
-            raise DiscordAPIError(f"Discord returned HTTP {response.status_code}")
+            body = response.text[:MAX_ERROR_BODY_LENGTH]
+            raise DiscordAPIError(
+                f"Discord returned HTTP {response.status_code}: {body}"
+            )
 
     async def current_user(self, access_token: str) -> dict[str, Any]:
         response = await self.client.get(

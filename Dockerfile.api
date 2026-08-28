@@ -8,6 +8,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 FROM python:3.14-slim-bookworm
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin botchan
 COPY --from=builder /app/.venv /app/.venv
 COPY alembic.ini botchan_config.py botchan.png ./

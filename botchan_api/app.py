@@ -1,4 +1,5 @@
 import json
+import logging
 import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,7 @@ MANAGE_GUILD = 1 << 5
 ADMINISTRATOR = 1 << 3
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 PROJECT_ROOT = WEB_ROOT.parent
+log = logging.getLogger("botchan.api")
 
 
 class APIError(Exception):
@@ -193,6 +195,7 @@ def create_app(
             try:
                 installed = guild_id in await discord.bot_guild_ids()
             except DiscordAPIError as exc:
+                log.exception("Discord bot installation check failed: %s", exc)
                 raise error(503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked.") from exc
             if not installed:
                 raise error(409, "BOT_NOT_INSTALLED", "Install BotChan before configuring this guild.")
@@ -324,6 +327,7 @@ def create_app(
         try:
             installed_ids = await discord.bot_guild_ids()
         except DiscordAPIError as exc:
+            log.exception("Discord bot installation check failed: %s", exc)
             raise error(503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked.") from exc
         ids = [str(guild["id"]) for guild in guilds]
         revisions = {

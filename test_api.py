@@ -1,9 +1,11 @@
 import unittest
 
+import httpx
 from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
 from botchan_api.app import ConfigWrite, config_etag, valid_snowflake
+from botchan_api.discord_client import DiscordAPIError, DiscordClient, MAX_ERROR_BODY_LENGTH
 from botchan_api.security import Security
 
 
@@ -54,6 +56,21 @@ class APIContractTests(unittest.TestCase):
             ConfigWrite.model_validate(
                 {"channel_pools": [{"base_name": "Same"}, {"base_name": "Same"}]}
             )
+
+
+class DiscordClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_error_includes_bounded_discord_response_body(self) -> None:
+        client = object.__new__(DiscordClient)
+        body = '{"message":"401: Unauthorized","code":0}'
+        response = httpx.Response(401, text=body)
+
+        with self.assertRaisesRegex(DiscordAPIError, "401: Unauthorized"):
+            await client._json(response)
+
+        long_response = httpx.Response(500, text="x" * (MAX_ERROR_BODY_LENGTH + 1))
+        with self.assertRaises(DiscordAPIError) as raised:
+            await client._json(long_response)
+        self.assertEqual(str(raised.exception).count("x"), MAX_ERROR_BODY_LENGTH)
 
 
 if __name__ == "__main__":
