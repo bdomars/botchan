@@ -93,14 +93,23 @@ button {
 .install-panel {
     max-width: none;
     margin: 0;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 2rem;
+    margin-top: 16px;
 }
 
 .install-panel .button {
-    flex: none;
+    width: fit-content;
+    margin-top: 1.5rem;
+}
+
+.install-panel h2 {
+    margin-top: 0.5rem;
+}
+
+.install-panel > div > p:not(.eyebrow) {
+    max-width: 38rem;
+    margin-top: 0.75rem;
+    color: var(--muted);
+    line-height: 1.6;
 }
 
 .page-error {
@@ -653,8 +662,7 @@ select[aria-invalid="true"] {
         text-align: left;
     }
 
-    .save-panel,
-    .install-panel {
+    .save-panel {
         align-items: stretch;
         flex-direction: column;
     }
