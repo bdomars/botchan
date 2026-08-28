@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import secrets
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,6 +31,7 @@ SESSION_COOKIE = "botchan_session"
 OAUTH_STATE_COOKIE = "botchan_oauth_state"
 MANAGE_GUILD = 1 << 5
 ADMINISTRATOR = 1 << 3
+BOT_GUILD_CACHE_SECONDS = 30
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 PROJECT_ROOT = WEB_ROOT.parent
 log = logging.getLogger("botchan.api")
@@ -84,6 +87,22 @@ def create_app(
     app.state.session_factory = session_factory
     app.state.security = security
     app.state.discord = discord
+
+    bot_guild_cache: set[str] | None = None
+    bot_guild_cache_expires_at = 0.0
+    bot_guild_cache_lock = asyncio.Lock()
+
+    async def bot_guild_ids() -> set[str]:
+        nonlocal bot_guild_cache, bot_guild_cache_expires_at
+        if bot_guild_cache is not None and time.monotonic() < bot_guild_cache_expires_at:
+            return bot_guild_cache
+        async with bot_guild_cache_lock:
+            if bot_guild_cache is not None and time.monotonic() < bot_guild_cache_expires_at:
+                return bot_guild_cache
+            guild_ids = await discord.bot_guild_ids()
+            bot_guild_cache = guild_ids
+            bot_guild_cache_expires_at = time.monotonic() + BOT_GUILD_CACHE_SECONDS
+            return guild_ids
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: RequestResponseEndpoint):
@@ -193,7 +212,7 @@ def create_app(
             raise error(403, "GUILD_ACCESS_DENIED", "You cannot manage this guild.")
         if require_installed:
             try:
-                installed = guild_id in await discord.bot_guild_ids()
+                installed = guild_id in await bot_guild_ids()
             except DiscordAPIError as exc:
                 log.exception("Discord bot installation check failed: %s", exc)
                 raise error(503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked.") from exc
@@ -325,7 +344,7 @@ def create_app(
     async def guild_list(db: DB, oauth_session: AuthSession) -> dict[str, Any]:
         guilds = [g for g in await user_guilds(oauth_session, db, force=False) if manageable(g)]
         try:
-            installed_ids = await discord.bot_guild_ids()
+            installed_ids = await bot_guild_ids()
         except DiscordAPIError as exc:
             log.exception("Discord bot installation check failed: %s", exc)
             raise error(503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked.") from exc
@@ -369,7 +388,9 @@ def create_app(
 
     @app.get("/api/guilds/{guild_id}/config")
     async def get_config(guild_id: str, db: DB, oauth_session: AuthSession) -> JSONResponse:
-        await authorized_guild(guild_id, oauth_session, db, force=False)
+        await authorized_guild(
+            guild_id, oauth_session, db, force=False, require_installed=False
+        )
         row = await db.get(GuildConfigRow, guild_id)
         if row is None:
             return JSONResponse(

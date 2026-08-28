@@ -5,7 +5,12 @@ from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
 from botchan_api.app import ConfigWrite, config_etag, valid_snowflake
-from botchan_api.discord_client import DiscordAPIError, DiscordClient, MAX_ERROR_BODY_LENGTH
+from botchan_api.discord_client import (
+    DiscordAPIError,
+    DiscordClient,
+    MAX_ERROR_BODY_LENGTH,
+    MAX_RATE_LIMIT_RETRIES,
+)
 from botchan_api.security import Security
 
 
@@ -71,6 +76,52 @@ class DiscordClientTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(DiscordAPIError) as raised:
             await client._json(long_response)
         self.assertEqual(str(raised.exception).count("x"), MAX_ERROR_BODY_LENGTH)
+
+    async def test_rate_limit_response_is_retried(self) -> None:
+        request_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            if request_count == 1:
+                return httpx.Response(
+                    429,
+                    json={"message": "rate limited", "retry_after": 0, "global": False},
+                    request=request,
+                )
+            return httpx.Response(200, json={"id": "123"}, request=request)
+
+        client = object.__new__(DiscordClient)
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            result = await client.current_user("access-token")
+        finally:
+            await client.client.aclose()
+
+        self.assertEqual(result, {"id": "123"})
+        self.assertEqual(request_count, 2)
+
+    async def test_rate_limit_retries_are_bounded(self) -> None:
+        request_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            return httpx.Response(
+                429,
+                json={"message": "rate limited", "retry_after": 0, "global": False},
+                request=request,
+            )
+
+        client = object.__new__(DiscordClient)
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            with self.assertRaisesRegex(DiscordAPIError, "HTTP 429"):
+                await client.current_user("access-token")
+        finally:
+            await client.client.aclose()
+
+        self.assertEqual(request_count, MAX_RATE_LIMIT_RETRIES + 1)
 
 
 if __name__ == "__main__":

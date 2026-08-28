@@ -222,8 +222,9 @@
                     }
                     if (!response.ok) throw new Error(body.message || `The server returned HTTP ${response.status}.`);
                     this.setLoadedDraft(body, response.headers.get("ETag"));
+                    this.selectedGuild.configured = true;
+                    this.selectedGuild.revision = body.revision;
                     this.notify("Guild saved");
-                    await this.loadGuilds();
                 } catch (error) {
                     this.saveError = "Could not save the guild: " + error.message;
                 } finally {

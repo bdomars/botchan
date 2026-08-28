@@ -19,8 +19,12 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         from botchan_api.models import GuildConfigRow, GuildConfigVersion, OAuthSession
         from botchan_api.settings import Settings
 
+        self.discord_calls = {"user_guilds": 0, "bot_guild_ids": 0}
+        discord_calls = self.discord_calls
+
         class FakeDiscord:
             async def user_guilds(_self, _access_token):
+                discord_calls["user_guilds"] += 1
                 return [
                     {
                         "id": "123456789012345678",
@@ -32,6 +36,7 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ]
 
             async def bot_guild_ids(_self):
+                discord_calls["bot_guild_ids"] += 1
                 return {"123456789012345678"}
 
             async def refresh(_self, _refresh_token):
@@ -131,6 +136,7 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             headers={"X-CSRF-Token": "csrf-token", "If-None-Match": "*"},
         )
         self.assertEqual(stale.status_code, 412)
+        self.assertEqual(self.discord_calls, {"user_guilds": 2, "bot_guild_ids": 1})
         async with self.app.state.session_factory() as db:
             version_count = await db.scalar(select(func.count()).select_from(GuildConfigVersion))
         self.assertEqual(version_count, 1)
