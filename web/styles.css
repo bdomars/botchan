@@ -75,9 +75,19 @@ button {
 }
 
 .login-panel .button {
-    display: inline-flex;
-    margin-top: 1rem;
-    text-decoration: none;
+    width: fit-content;
+    margin-top: 1.5rem;
+}
+
+.login-panel h2 {
+    margin-top: 0.5rem;
+}
+
+.login-panel > p:not(.eyebrow) {
+    max-width: 38rem;
+    margin-top: 0.75rem;
+    color: var(--muted);
+    line-height: 1.6;
 }
 
 .install-panel {
@@ -91,7 +101,6 @@ button {
 
 .install-panel .button {
     flex: none;
-    text-decoration: none;
 }
 
 .page-error {
@@ -210,11 +219,17 @@ h3 {
 }
 
 .button {
+    display: inline-flex;
     min-height: 42px;
+    align-items: center;
+    justify-content: center;
     padding: 0 16px;
     border-radius: 11px;
     font-size: 0.86rem;
     font-weight: 700;
+    line-height: 1.2;
+    text-align: center;
+    text-decoration: none;
 }
 
 .button:hover:not(:disabled),
