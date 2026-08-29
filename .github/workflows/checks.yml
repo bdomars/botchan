@@ -43,6 +43,6 @@ jobs:
       - run: uv sync --frozen
       - run: uv run alembic upgrade head
       - run: uv run ty check
-      - run: uv run python -m py_compile bot.py botchan_config.py botchan_api/*.py test_bot.py test_api.py main.py
+      - run: uv run python -m compileall -q botchan botchan_api test_*.py
       - run: uv run python -m unittest -v
       - run: node --test web/test_config_core.js

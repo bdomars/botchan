@@ -13,7 +13,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin botchan
 COPY --from=builder /app/.venv /app/.venv
-COPY alembic.ini botchan_config.py botchan.png ./
+COPY alembic.ini botchan.png ./
+COPY botchan ./botchan
 COPY migrations ./migrations
 COPY botchan_api ./botchan_api
 COPY web ./web

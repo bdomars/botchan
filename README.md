@@ -100,7 +100,7 @@ See `botchan.config.example.json` for a starter file.
 
 ```fish
 source env.fish
-uv run python main.py
+uv run python -m botchan
 ```
 
 Do not commit real bot tokens. If a token is ever exposed, rotate it in the Discord Developer Portal.
@@ -163,14 +163,14 @@ Install and run through `uv`:
 
 ```bash
 uv sync
-uv run python main.py
+uv run python -m botchan
 ```
 
 Run checks:
 
 ```bash
 uv run ty check
-uv run python -m py_compile bot.py botchan_config.py botchan_api/*.py test_bot.py test_api.py main.py
+uv run python -m compileall -q botchan botchan_api test_*.py
 uv run python -m unittest -v
 node --test web/test_config_core.js
 ```

@@ -19,12 +19,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import RequestResponseEndpoint
 
+from botchan.config import ChannelPoolConfig, GuildConfig
 from botchan_api.database import create_database
 from botchan_api.discord_client import DiscordAPIError, DiscordClient
 from botchan_api.models import GuildConfigRow, GuildConfigVersion, OAuthSession
 from botchan_api.security import Security
 from botchan_api.settings import Settings
-from botchan_config import ChannelPoolConfig, GuildConfig
 
 SESSION_COOKIE = "botchan_session"
 OAUTH_STATE_COOKIE = "botchan_oauth_state"

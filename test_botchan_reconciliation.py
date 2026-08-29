@@ -1,21 +1,16 @@
 import unittest
-import logging
 from dataclasses import dataclass, field
-from unittest.mock import patch
 
-from bot import (
-    ChannelSpec,
-    ManagedPool,
+from botchan.client import ManagedPool
+from botchan.config import ChannelPoolSpec
+from botchan.reconciliation import (
     desired_channel_count,
-    load_bot_config,
-    parse_runtime_config_data,
     parse_channel_number,
     plan_reconcile,
     refresh_empty_timers,
 )
 
-
-SPEC = ChannelSpec(
+SPEC = ChannelPoolSpec(
     base_name="Other Games",
     min_channels=3,
     max_channels=10,
@@ -40,7 +35,7 @@ class OtherGamesChannelTests(unittest.TestCase):
         self.assertIsNone(parse_channel_number("Other Games 2", SPEC))
 
     def test_parse_channel_names_with_custom_base_name(self) -> None:
-        spec = ChannelSpec(
+        spec = ChannelPoolSpec(
             base_name="Side Quests",
             min_channels=2,
             max_channels=5,
@@ -69,7 +64,7 @@ class OtherGamesChannelTests(unittest.TestCase):
         self.assertEqual(desired_channel_count(channels, SPEC), 3)
 
     def test_desired_count_is_capped_at_max(self) -> None:
-        spec = ChannelSpec(
+        spec = ChannelPoolSpec(
             base_name="Other Games",
             min_channels=3,
             max_channels=4,
@@ -85,9 +80,7 @@ class OtherGamesChannelTests(unittest.TestCase):
         self.assertEqual(desired_channel_count(channels, spec), 4)
 
     def test_creates_missing_minimum_channels(self) -> None:
-        channels = [
-            FakeChannel(101, "Other Games", []),
-        ]
+        channels = [FakeChannel(101, "Other Games", [])]
 
         plan = plan_reconcile(channels, {}, 0.0, SPEC)
 
@@ -154,7 +147,9 @@ class OtherGamesChannelTests(unittest.TestCase):
 
         self.assertEqual(plan.delete_channel_ids, [])
 
-    def test_does_not_delete_protected_min_channel_to_satisfy_excess_count(self) -> None:
+    def test_does_not_delete_protected_min_channel_to_satisfy_excess_count(
+        self,
+    ) -> None:
         channels = [
             FakeChannel(101, "Other Games", []),
             FakeChannel(102, "Other Games #2", []),
@@ -207,136 +202,11 @@ class OtherGamesChannelTests(unittest.TestCase):
         self.assertEqual(plan.blocked_reason, "duplicate channel numbers: 4")
 
 
-class ConfigTests(unittest.TestCase):
-    def test_parse_runtime_config_data_supports_multiple_guilds_and_pools(self) -> None:
-        config = parse_runtime_config_data(
-            {
-                "guilds": [
-                    {
-                        "guild_id": 111,
-                        "channel_pools": [
-                            {
-                                "base_name": "Other Games",
-                                "min_channels": 2,
-                                "max_channels": 10,
-                                "idle_seconds": 300,
-                            },
-                            {
-                                "base_name": "Raid Rooms",
-                                "min_channels": 1,
-                                "max_channels": 4,
-                                "idle_seconds": 60,
-                            },
-                        ],
-                    },
-                    {
-                        "guild_id": 222,
-                        "channel_pools": [
-                            {
-                                "base_name": "Side Quests",
-                            },
-                        ],
-                    },
-                ],
-            }
-        )
-
-        self.assertEqual(set(config.guilds), {111, 222})
-        self.assertEqual(len(config.guilds[111].channel_pools), 2)
-        self.assertEqual(config.guilds[222].channel_pools[0].base_name, "Side Quests")
-        self.assertEqual(config.guilds[222].channel_pools[0].min_channels, 3)
-
-    def test_parse_runtime_config_data_rejects_duplicate_pool_base_names_in_guild(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "duplicates another pool"):
-            parse_runtime_config_data(
-                {
-                    "guilds": [
-                        {
-                            "guild_id": 111,
-                            "channel_pools": [
-                                {"base_name": "Other Games"},
-                                {"base_name": "Other Games"},
-                            ],
-                        },
-                    ],
-                }
-            )
-
-    def test_parse_runtime_config_data_rejects_invalid_pool_bounds(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "max_channels"):
-            parse_runtime_config_data(
-                {
-                    "guilds": [
-                        {
-                            "guild_id": 111,
-                            "channel_pools": [
-                                {
-                                    "base_name": "Other Games",
-                                    "min_channels": 5,
-                                    "max_channels": 4,
-                                },
-                            ],
-                        },
-                    ],
-                }
-            )
-
-    def test_parse_runtime_config_data_rejects_max_channels_less_than_one(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "max_channels"):
-            parse_runtime_config_data(
-                {
-                    "guilds": [
-                        {
-                            "guild_id": 111,
-                            "channel_pools": [
-                                {
-                                    "base_name": "Other Games",
-                                    "max_channels": 0,
-                                },
-                            ],
-                        },
-                    ],
-                }
-            )
-
-    def test_load_bot_config_reads_token_and_defaults_log_level(self) -> None:
-        with patch.dict("os.environ", {"DISCORD_TOKEN": " token "}, clear=True):
-            config = load_bot_config()
-
-        self.assertEqual(config.token, "token")
-        self.assertEqual(config.log_level, logging.INFO)
-        self.assertEqual(config.git_rev, "unknown")
-
-    def test_load_bot_config_reads_git_revision(self) -> None:
-        with patch.dict(
-            "os.environ",
-            {"DISCORD_TOKEN": "token", "BOTCHAN_GIT_REV": "abc123"},
-            clear=True,
-        ):
-            config = load_bot_config()
-
-        self.assertEqual(config.git_rev, "abc123")
-
-    def test_load_bot_config_rejects_missing_token(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "DISCORD_TOKEN"):
-                load_bot_config()
-
-    def test_load_bot_config_rejects_unknown_log_level(self) -> None:
-        with patch.dict(
-            "os.environ",
-            {"DISCORD_TOKEN": "token", "LOG_LEVEL": "LOUD"},
-            clear=True,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "Unknown LOG_LEVEL: LOUD"):
-                load_bot_config()
-
-
 class ManagedPoolTests(unittest.TestCase):
     def test_empty_timers_are_isolated_per_pool(self) -> None:
         games_pool = ManagedPool(spec=SPEC)
         raid_pool = ManagedPool(
-            spec=ChannelSpec(
+            spec=ChannelPoolSpec(
                 base_name="Raid Rooms",
                 min_channels=1,
                 max_channels=3,
@@ -348,8 +218,12 @@ class ManagedPoolTests(unittest.TestCase):
             FakeChannel(201, "Raid Rooms", []),
         ]
 
-        refresh_empty_timers(channels, games_pool.empty_since_by_channel_id, 10.0, games_pool.spec)
-        refresh_empty_timers(channels, raid_pool.empty_since_by_channel_id, 20.0, raid_pool.spec)
+        refresh_empty_timers(
+            channels, games_pool.empty_since_by_channel_id, 10.0, games_pool.spec
+        )
+        refresh_empty_timers(
+            channels, raid_pool.empty_since_by_channel_id, 20.0, raid_pool.spec
+        )
 
         self.assertEqual(games_pool.empty_since_by_channel_id, {101: 10.0})
         self.assertEqual(raid_pool.empty_since_by_channel_id, {201: 20.0})

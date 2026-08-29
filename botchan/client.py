@@ -1,50 +1,26 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
-from pathlib import Path
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from collections.abc import Iterable, Sequence
-from typing import Protocol
 
 import discord
 from discord.ext import commands, tasks
-from botchan_config import (
-    ChannelPoolSpec,
-    GuildSpec,
-    RuntimeConfig,
-    parse_runtime_config_data,
-)
 
+from botchan.config import ChannelPoolSpec, RuntimeConfig
+from botchan.reconciliation import (
+    ReconcilePlan,
+    base_channel,
+    parse_channel_number,
+    plan_reconcile,
+    refresh_empty_timers,
+)
 
 log = logging.getLogger("botchan")
 
 CLEANUP_INTERVAL_SECONDS = 30
-DEFAULT_RUNTIME_CONFIG_PATH = "botchan.config.json"
-
-
-class ManagedVoiceChannel(Protocol):
-    @property
-    def id(self) -> int: ...
-
-    @property
-    def name(self) -> str: ...
-
-    @property
-    def members(self) -> Sequence[object]: ...
-
-
-@dataclass(frozen=True)
-class BotConfig:
-    token: str
-    log_level: int
-    git_rev: str
-
-
-ChannelSpec = ChannelPoolSpec
 
 
 @dataclass
@@ -59,176 +35,6 @@ class ManagedGuild:
     pools: list[ManagedPool]
 
 
-@dataclass(frozen=True)
-class ReconcilePlan:
-    create_numbers: list[int] = field(default_factory=list)
-    delete_channel_ids: list[int] = field(default_factory=list)
-    blocked_reason: str | None = None
-
-
-def load_bot_config() -> BotConfig:
-    token = os.environ.get("DISCORD_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("DISCORD_TOKEN is required")
-
-    log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
-    log_level = logging.getLevelNamesMapping().get(log_level_name)
-    if log_level is None:
-        raise RuntimeError(f"Unknown LOG_LEVEL: {log_level_name}")
-
-    git_rev = os.environ.get("BOTCHAN_GIT_REV", "unknown")
-    return BotConfig(token=token, log_level=log_level, git_rev=git_rev)
-
-
-def load_runtime_config() -> RuntimeConfig:
-    config_path = Path(os.environ.get("BOTCHAN_CONFIG", DEFAULT_RUNTIME_CONFIG_PATH))
-    return load_runtime_config_file(config_path)
-
-
-def load_runtime_config_file(path: Path) -> RuntimeConfig:
-    try:
-        with path.open(encoding="utf-8") as config_file:
-            data = json.load(config_file)
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"Config file not found: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Config file is not valid JSON: {path}") from exc
-
-    return parse_runtime_config_data(data)
-
-
-def parse_channel_number(name: str, spec: ChannelPoolSpec) -> int | None:
-    match = spec.channel_re.fullmatch(name)
-    if not match:
-        return None
-    number = match.group("number")
-    if number is None:
-        return 1
-    parsed_number = int(number)
-    return parsed_number if parsed_number > 1 else None
-
-
-def channel_is_occupied(channel: ManagedVoiceChannel) -> bool:
-    return len(channel.members) > 0
-
-
-def canonical_managed_channels(
-    channels: Iterable[ManagedVoiceChannel], spec: ChannelPoolSpec
-) -> dict[int, ManagedVoiceChannel]:
-    managed: dict[int, ManagedVoiceChannel] = {}
-    for channel in channels:
-        number = parse_channel_number(channel.name, spec)
-        if number is None:
-            continue
-        if number not in managed:
-            managed[number] = channel
-    return managed
-
-
-def duplicate_extra_numbers(
-    channels: Iterable[ManagedVoiceChannel], spec: ChannelPoolSpec
-) -> set[int]:
-    seen: set[int] = set()
-    duplicates: set[int] = set()
-    for channel in channels:
-        number = parse_channel_number(channel.name, spec)
-        if number is None:
-            continue
-        if number in seen:
-            duplicates.add(number)
-        seen.add(number)
-    return duplicates
-
-
-def desired_channel_count(channels: Iterable[ManagedVoiceChannel], spec: ChannelPoolSpec) -> int:
-    occupied_count = sum(1 for channel in channels if channel_is_occupied(channel))
-    return min(max(occupied_count + 1, spec.min_channels), spec.max_channels)
-
-
-def plan_reconcile(
-    channels: Iterable[ManagedVoiceChannel],
-    empty_since_by_channel_id: dict[int, float],
-    now: float,
-    spec: ChannelPoolSpec,
-) -> ReconcilePlan:
-    channel_list = list(channels)
-    duplicate_numbers = duplicate_extra_numbers(channel_list, spec)
-    if duplicate_numbers:
-        duplicates = ", ".join(str(number) for number in sorted(duplicate_numbers))
-        return ReconcilePlan(blocked_reason=f"duplicate channel numbers: {duplicates}")
-
-    managed = canonical_managed_channels(channel_list, spec)
-    desired_count = desired_channel_count(managed.values(), spec)
-    current_count = len(managed)
-
-    if current_count < desired_count:
-        missing_numbers = [
-            number for number in range(1, desired_count + 1) if number not in managed
-        ]
-        next_number = max(managed, default=0) + 1
-        while len(missing_numbers) < desired_count - current_count:
-            missing_numbers.append(next_number)
-            next_number += 1
-        return ReconcilePlan(create_numbers=missing_numbers[: desired_count - current_count])
-
-    if current_count <= desired_count:
-        return ReconcilePlan()
-
-    excess_count = current_count - desired_count
-    delete_channel_ids: list[int] = []
-    for number, channel in sorted(managed.items(), reverse=True):
-        if len(delete_channel_ids) >= excess_count:
-            break
-        if number <= spec.min_channels:
-            continue
-        if channel_is_occupied(channel):
-            continue
-        empty_since = empty_since_by_channel_id.get(channel.id)
-        if empty_since is not None and now - empty_since >= spec.idle_seconds:
-            delete_channel_ids.append(channel.id)
-
-    return ReconcilePlan(delete_channel_ids=delete_channel_ids)
-
-
-def refresh_empty_timers(
-    channels: Iterable[ManagedVoiceChannel],
-    empty_since_by_channel_id: dict[int, float],
-    now: float,
-    spec: ChannelPoolSpec,
-) -> None:
-    current_ids = set()
-
-    for channel in channels:
-        number = parse_channel_number(channel.name, spec)
-        if number is None:
-            continue
-        current_ids.add(channel.id)
-
-        if channel_is_occupied(channel):
-            empty_since_by_channel_id.pop(channel.id, None)
-        else:
-            empty_since_by_channel_id.setdefault(channel.id, now)
-
-    stale_ids = set(empty_since_by_channel_id) - current_ids
-    for channel_id in stale_ids:
-        empty_since_by_channel_id.pop(channel_id, None)
-
-
-def base_channel(
-    channels: Iterable[ManagedVoiceChannel], spec: ChannelPoolSpec
-) -> ManagedVoiceChannel | None:
-    managed: dict[int, ManagedVoiceChannel] = {}
-    for channel in channels:
-        number = parse_channel_number(channel.name, spec)
-        if number is not None and number not in managed:
-            managed[number] = channel
-
-    return managed.get(1) or next(
-        (channel for _, channel in sorted(managed.items())),
-        None,
-    )
-
-
 class BotChan(commands.Bot):
     def __init__(self, config: RuntimeConfig) -> None:
         intents = discord.Intents.default()
@@ -239,7 +45,10 @@ class BotChan(commands.Bot):
         self.managed_guilds = {
             guild_id: ManagedGuild(
                 guild_id=guild_id,
-                pools=[ManagedPool(spec=pool_spec) for pool_spec in guild_spec.channel_pools],
+                pools=[
+                    ManagedPool(spec=pool_spec)
+                    for pool_spec in guild_spec.channel_pools
+                ],
             )
             for guild_id, guild_spec in config.guilds.items()
         }
@@ -388,16 +197,22 @@ class BotChan(commands.Bot):
             await self._position_after_highest_managed(new_channel, channels, spec)
             log.info("Created channel %s in guild %s", new_channel.name, guild.id)
         except discord.DiscordException:
-            log.exception("Failed to create %s in guild %s", spec.channel_name(number), guild.id)
+            log.exception(
+                "Failed to create %s in guild %s", spec.channel_name(number), guild.id
+            )
 
-    async def _delete_channels(self, pool: ManagedPool, channel_ids: Iterable[int]) -> None:
+    async def _delete_channels(
+        self, pool: ManagedPool, channel_ids: Iterable[int]
+    ) -> None:
         for channel_id in channel_ids:
             channel = self.get_channel(channel_id)
             if not isinstance(channel, discord.VoiceChannel):
                 pool.empty_since_by_channel_id.pop(channel_id, None)
                 continue
             try:
-                await channel.delete(reason="Managed voice channel exceeded desired count")
+                await channel.delete(
+                    reason="Managed voice channel exceeded desired count"
+                )
                 pool.empty_since_by_channel_id.pop(channel_id, None)
                 log.info(
                     "Deleted channel %s from guild %s pool %s",
@@ -431,15 +246,3 @@ class BotChan(commands.Bot):
             await new_channel.edit(position=highest_channel.position + 1)
         except discord.DiscordException:
             log.exception("Failed to position channel %s", new_channel.name)
-
-
-def main() -> None:
-    bot_config = load_bot_config()
-    runtime_config = load_runtime_config()
-    print(f"Git revision: {bot_config.git_rev}", flush=True)
-    bot = BotChan(runtime_config)
-    bot.run(bot_config.token, log_level=bot_config.log_level, root_logger=True)
-
-
-if __name__ == "__main__":
-    main()
