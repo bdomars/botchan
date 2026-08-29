@@ -5,6 +5,7 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="description" content="Build a BotChan single-guild channel pool specification.">
         <title>BotChan Guild Editor</title>
+        <link rel="preconnect" href="https://cdn.jsdelivr.net">
         <link rel="stylesheet" href="styles.css">
         <script
             defer
@@ -26,6 +27,11 @@
         </p>
 
         <main id="app" v-cloak>
+            <section v-if="authLoading" class="panel state-panel boot-panel" aria-live="polite">
+                <h2>Loading BotChan…</h2>
+            </section>
+
+            <template v-else>
             <header class="site-header">
                 <div class="brand">
                     <img src="/botchan.png" alt="" class="brand-avatar">
@@ -57,11 +63,7 @@
                 </div>
             </header>
 
-            <section v-if="authLoading" class="panel state-panel" aria-live="polite">
-                <h2>Loading BotChan…</h2>
-            </section>
-
-            <section v-else-if="!session?.authenticated" class="panel login-panel">
+            <section v-if="!session?.authenticated" class="panel login-panel">
                 <p class="eyebrow">Discord authentication</p>
                 <h2>Configure BotChan for your servers.</h2>
                 <p>Log in to see Discord servers where you have permission to manage the server.</p>
@@ -310,6 +312,7 @@
             </section>
 
             <div v-if="toast" class="toast" role="status">{{ toast }}</div>
+            </template>
         </main>
     </body>
 </html>

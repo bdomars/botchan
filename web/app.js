@@ -69,6 +69,7 @@
         methods: {
             async initialize() {
                 this.authLoading = true;
+                let authenticated = false;
                 const authError = new URLSearchParams(window.location.search).get("auth_error");
                 if (authError) {
                     this.pageError = "Discord login did not complete. Please try again.";
@@ -77,14 +78,13 @@
                 try {
                     const response = await fetch("/api/session", { headers: { Accept: "application/json" } });
                     this.session = await response.json();
-                    if (this.session.authenticated) {
-                        await this.loadGuilds();
-                    }
+                    authenticated = this.session.authenticated;
                 } catch (error) {
                     this.pageError = "Could not connect to BotChan: " + error.message;
                 } finally {
                     this.authLoading = false;
                 }
+                if (authenticated) await this.loadGuilds();
             },
 
             async loadGuilds() {

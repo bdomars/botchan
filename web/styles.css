@@ -74,6 +74,11 @@ button {
     padding: clamp(1.5rem, 4vw, 3rem);
 }
 
+.boot-panel {
+    margin-top: clamp(5rem, 20vh, 10rem);
+    text-align: center;
+}
+
 .login-panel .button {
     width: fit-content;
     margin-top: 1.5rem;

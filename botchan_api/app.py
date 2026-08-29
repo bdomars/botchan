@@ -10,8 +10,8 @@ from typing import Annotated, Any, Self
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Header, Query, Request
-from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -25,7 +25,6 @@ from botchan_api.models import GuildConfigRow, GuildConfigVersion, OAuthSession
 from botchan_api.security import Security
 from botchan_api.settings import Settings
 from botchan_config import ChannelPoolConfig, GuildConfig
-
 
 SESSION_COOKIE = "botchan_session"
 OAUTH_STATE_COOKIE = "botchan_oauth_state"
