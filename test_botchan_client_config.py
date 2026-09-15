@@ -134,5 +134,108 @@ class BotConfigRefreshTests(unittest.IsolatedAsyncioTestCase):
         discord_close.assert_awaited_once()
 
 
+async def settle() -> None:
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+class GuildLockTests(unittest.IsolatedAsyncioTestCase):
+    async def make_bot(self, *guild_ids: int) -> BotChan:
+        bot = BotChan(cast(Any, object()))
+        await bot._apply_config_snapshot(
+            ConfigSnapshot(
+                guilds={guild_id: versioned(guild_id, 1) for guild_id in guild_ids},
+                invalid_guild_ids=set(),
+            )
+        )
+        return bot
+
+    async def test_passes_for_the_same_guild_run_one_at_a_time(self) -> None:
+        bot = await self.make_bot(111)
+        release = asyncio.Event()
+        entered: list[int] = []
+
+        async def blocking_pass(managed_guild: Any) -> None:
+            entered.append(managed_guild.guild_id)
+            await release.wait()
+
+        with patch.object(bot, "_reconcile_guild_unlocked", new=blocking_pass):
+            first = asyncio.create_task(bot.reconcile_guild_id(111))
+            second = asyncio.create_task(bot.reconcile_guild_id(111))
+            await settle()
+            self.assertEqual(entered, [111])
+
+            release.set()
+            await asyncio.gather(first, second)
+
+        self.assertEqual(entered, [111, 111])
+
+    async def test_slow_guild_does_not_block_other_guilds(self) -> None:
+        bot = await self.make_bot(111, 222)
+        release = asyncio.Event()
+        finished: list[int] = []
+
+        async def pass_blocking_111(managed_guild: Any) -> None:
+            if managed_guild.guild_id == 111:
+                await release.wait()
+            finished.append(managed_guild.guild_id)
+
+        with patch.object(bot, "_reconcile_guild_unlocked", new=pass_blocking_111):
+            blocked = asyncio.create_task(bot.reconcile_guild_id(111))
+            await settle()
+            await asyncio.wait_for(bot.reconcile_guild_id(222), timeout=1)
+            self.assertEqual(finished, [222])
+            self.assertFalse(blocked.done())
+
+            release.set()
+            await blocked
+
+        self.assertEqual(finished, [222, 111])
+
+    async def test_waiting_pass_skips_guild_whose_config_was_deleted(self) -> None:
+        bot = await self.make_bot(111)
+        release = asyncio.Event()
+        entered: list[int] = []
+
+        async def blocking_pass(managed_guild: Any) -> None:
+            entered.append(managed_guild.guild_id)
+            await release.wait()
+
+        with patch.object(bot, "_reconcile_guild_unlocked", new=blocking_pass):
+            first = asyncio.create_task(bot.reconcile_guild_id(111))
+            await settle()
+            second = asyncio.create_task(bot.reconcile_guild_id(111))
+            await settle()
+            await bot._apply_config_change(GuildConfigChange(guild_id=111, config=None))
+
+            release.set()
+            await asyncio.gather(first, second)
+
+        self.assertEqual(entered, [111])
+
+    async def test_sweep_tolerates_config_deleted_mid_sweep(self) -> None:
+        bot = await self.make_bot(111, 222)
+        cleaned: list[int] = []
+
+        async def cleanup(managed_guild: Any) -> None:
+            cleaned.append(managed_guild.guild_id)
+            if managed_guild.guild_id == 111:
+                await bot._apply_config_change(
+                    GuildConfigChange(guild_id=222, config=None)
+                )
+
+        with patch.object(bot, "_cleanup_guild_unlocked", new=cleanup):
+            await bot.cleanup_empty_channels()
+
+        self.assertEqual(cleaned, [111])
+
+    async def test_voice_events_in_unmanaged_guilds_create_no_lock(self) -> None:
+        bot = await self.make_bot(111)
+
+        await bot.reconcile_guild_id(999)
+
+        self.assertNotIn(999, bot._guild_locks)
+
+
 if __name__ == "__main__":
     unittest.main()

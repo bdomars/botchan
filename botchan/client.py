@@ -51,7 +51,10 @@ class BotChan(commands.Bot):
         self.managed_guilds: dict[int, ManagedGuild] = {}
         self._config_revisions: dict[int, int] = {}
         self._config_source = config_source
-        self._reconcile_lock = asyncio.Lock()
+        # Serializes passes within a guild, so two concurrent passes never both
+        # create the same channel number. Locks are never removed: a pass may
+        # still be waiting on one after its guild's config is deleted.
+        self._guild_locks: dict[int, asyncio.Lock] = {}
         self._shutdown_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
@@ -96,77 +99,79 @@ class BotChan(commands.Bot):
             return
         await self.reconcile_guild_id(channel.guild.id)
 
-    async def reconcile_all_guilds(self) -> None:
-        async with self._reconcile_lock:
-            for managed_guild in self.managed_guilds.values():
-                await self._reconcile_guild_unlocked(managed_guild)
+    def _guild_lock(self, guild_id: int) -> asyncio.Lock:
+        lock = self._guild_locks.get(guild_id)
+        if lock is None:
+            lock = self._guild_locks[guild_id] = asyncio.Lock()
+        return lock
 
-    async def reconcile_guild(self, managed_guild: ManagedGuild) -> None:
-        async with self._reconcile_lock:
-            await self._reconcile_guild_unlocked(managed_guild)
+    async def reconcile_all_guilds(self) -> None:
+        # Copy the IDs: config changes can edit managed_guilds while we await.
+        for guild_id in list(self.managed_guilds):
+            await self.reconcile_guild_id(guild_id)
 
     async def reconcile_guild_id(self, guild_id: int) -> None:
-        async with self._reconcile_lock:
+        if guild_id not in self.managed_guilds:
+            return
+        async with self._guild_lock(guild_id):
+            # Look up again: the config may have changed while we waited.
             managed_guild = self.managed_guilds.get(guild_id)
             if managed_guild is not None:
                 await self._reconcile_guild_unlocked(managed_guild)
 
     async def _apply_config_snapshot(self, snapshot: ConfigSnapshot) -> None:
-        async with self._reconcile_lock:
-            changed_guild_ids: list[int] = []
-            new_guilds: dict[int, ManagedGuild] = {}
-            new_revisions: dict[int, int] = {}
+        changed_guild_ids: list[int] = []
+        new_guilds: dict[int, ManagedGuild] = {}
+        new_revisions: dict[int, int] = {}
 
-            for guild_id, versioned_config in snapshot.guilds.items():
-                existing = self.managed_guilds.get(guild_id)
-                new_guilds[guild_id] = self._build_managed_guild(
-                    versioned_config.spec, existing
-                )
-                new_revisions[guild_id] = versioned_config.revision
-                if self._config_revisions.get(guild_id) != versioned_config.revision:
-                    changed_guild_ids.append(guild_id)
+        for guild_id, versioned_config in snapshot.guilds.items():
+            existing = self.managed_guilds.get(guild_id)
+            new_guilds[guild_id] = self._build_managed_guild(
+                versioned_config.spec, existing
+            )
+            new_revisions[guild_id] = versioned_config.revision
+            if self._config_revisions.get(guild_id) != versioned_config.revision:
+                changed_guild_ids.append(guild_id)
 
-            for guild_id in snapshot.invalid_guild_ids:
-                existing = self.managed_guilds.get(guild_id)
-                revision = self._config_revisions.get(guild_id)
-                if existing is not None and revision is not None:
-                    new_guilds[guild_id] = existing
-                    new_revisions[guild_id] = revision
+        for guild_id in snapshot.invalid_guild_ids:
+            existing = self.managed_guilds.get(guild_id)
+            revision = self._config_revisions.get(guild_id)
+            if existing is not None and revision is not None:
+                new_guilds[guild_id] = existing
+                new_revisions[guild_id] = revision
 
-            self.managed_guilds = new_guilds
-            self._config_revisions = new_revisions
-            log.info("Loaded configuration for %s guilds", len(new_guilds))
+        self.managed_guilds = new_guilds
+        self._config_revisions = new_revisions
+        log.info("Loaded configuration for %s guilds", len(new_guilds))
 
-            if self.is_ready():
-                for guild_id in changed_guild_ids:
-                    await self._reconcile_guild_unlocked(new_guilds[guild_id])
+        if self.is_ready():
+            for guild_id in changed_guild_ids:
+                await self.reconcile_guild_id(guild_id)
 
     async def _apply_config_change(self, change: GuildConfigChange) -> None:
-        async with self._reconcile_lock:
-            if change.invalid:
-                return
-            if change.config is None:
-                self.managed_guilds.pop(change.guild_id, None)
-                self._config_revisions.pop(change.guild_id, None)
-                log.info("Stopped managing guild %s", change.guild_id)
-                return
+        if change.invalid:
+            return
+        if change.config is None:
+            self.managed_guilds.pop(change.guild_id, None)
+            self._config_revisions.pop(change.guild_id, None)
+            log.info("Stopped managing guild %s", change.guild_id)
+            return
 
-            current_revision = self._config_revisions.get(change.guild_id, 0)
-            if current_revision >= change.config.revision:
-                return
-            managed_guild = self._build_managed_guild(
-                change.config.spec,
-                self.managed_guilds.get(change.guild_id),
-            )
-            self.managed_guilds[change.guild_id] = managed_guild
-            self._config_revisions[change.guild_id] = change.config.revision
-            log.info(
-                "Loaded guild %s configuration revision %s",
-                change.guild_id,
-                change.config.revision,
-            )
-            if self.is_ready():
-                await self._reconcile_guild_unlocked(managed_guild)
+        current_revision = self._config_revisions.get(change.guild_id, 0)
+        if current_revision >= change.config.revision:
+            return
+        self.managed_guilds[change.guild_id] = self._build_managed_guild(
+            change.config.spec,
+            self.managed_guilds.get(change.guild_id),
+        )
+        self._config_revisions[change.guild_id] = change.config.revision
+        log.info(
+            "Loaded guild %s configuration revision %s",
+            change.guild_id,
+            change.config.revision,
+        )
+        if self.is_ready():
+            await self.reconcile_guild_id(change.guild_id)
 
     @staticmethod
     def _build_managed_guild(
@@ -263,18 +268,23 @@ class BotChan(commands.Bot):
 
     @tasks.loop(seconds=CLEANUP_INTERVAL_SECONDS)
     async def cleanup_empty_channels(self) -> None:
-        async with self._reconcile_lock:
-            for managed_guild in self.managed_guilds.values():
-                guild = self.get_guild(managed_guild.guild_id)
-                if guild is None:
-                    log.error("Guild %s was not found", managed_guild.guild_id)
-                    continue
-                channels = list(guild.voice_channels)
-                for pool in managed_guild.pools:
-                    plan = self._plan_pool_changes("cleanup", guild, channels, pool)
-                    if plan is None:
-                        continue
-                    await self._delete_channels(pool, plan.delete_channel_ids)
+        for guild_id in list(self.managed_guilds):
+            async with self._guild_lock(guild_id):
+                managed_guild = self.managed_guilds.get(guild_id)
+                if managed_guild is not None:
+                    await self._cleanup_guild_unlocked(managed_guild)
+
+    async def _cleanup_guild_unlocked(self, managed_guild: ManagedGuild) -> None:
+        guild = self.get_guild(managed_guild.guild_id)
+        if guild is None:
+            log.error("Guild %s was not found", managed_guild.guild_id)
+            return
+        channels = list(guild.voice_channels)
+        for pool in managed_guild.pools:
+            plan = self._plan_pool_changes("cleanup", guild, channels, pool)
+            if plan is None:
+                continue
+            await self._delete_channels(pool, plan.delete_channel_ids)
 
     @cleanup_empty_channels.before_loop
     async def before_cleanup_empty_channels(self) -> None:
