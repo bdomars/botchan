@@ -93,6 +93,7 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         import asyncpg
         from sqlalchemy import func, select
 
+        from botchan.database_config import PostgresConfigSource
         from botchan_api.models import GuildConfigVersion
 
         assert TEST_DATABASE_URL is not None
@@ -105,6 +106,19 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             notification.set()
 
         await connection.add_listener("botchan_config_changed", listener)
+        config_changes = []
+        config_changed = asyncio.Event()
+
+        async def apply_snapshot(snapshot):
+            self.assertEqual(snapshot.guilds, {})
+
+        async def apply_change(change):
+            config_changes.append(change)
+            config_changed.set()
+
+        source = PostgresConfigSource(TEST_DATABASE_URL)
+        await source.start(apply_snapshot, apply_change)
+        self.addAsyncCleanup(source.close)
         body = {
             "channel_pools": [
                 {
@@ -125,6 +139,11 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["guild_id"], "123456789012345678")
         await asyncio.wait_for(notification.wait(), timeout=2)
         self.assertEqual(payloads, ['{"guild_id":"123456789012345678","revision":1}'])
+        await asyncio.wait_for(config_changed.wait(), timeout=2)
+        self.assertEqual(config_changes[0].config.revision, 1)
+        self.assertEqual(
+            config_changes[0].config.spec.channel_pools[0].base_name, "Other Games"
+        )
 
         loaded = await self.client.get("/api/guilds/123456789012345678/config")
         self.assertEqual(loaded.status_code, 200)

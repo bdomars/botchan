@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -9,7 +10,12 @@ from dataclasses import dataclass, field
 import discord
 from discord.ext import commands, tasks
 
-from botchan.config import ChannelPoolSpec, RuntimeConfig
+from botchan.config import ChannelPoolSpec, GuildSpec
+from botchan.database_config import (
+    ConfigSnapshot,
+    GuildConfigChange,
+    PostgresConfigSource,
+)
 from botchan.reconciliation import (
     ReconcilePlan,
     base_channel,
@@ -36,26 +42,41 @@ class ManagedGuild:
 
 
 class BotChan(commands.Bot):
-    def __init__(self, config: RuntimeConfig) -> None:
+    def __init__(self, config_source: PostgresConfigSource) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True
 
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
-        self.managed_guilds = {
-            guild_id: ManagedGuild(
-                guild_id=guild_id,
-                pools=[
-                    ManagedPool(spec=pool_spec)
-                    for pool_spec in guild_spec.channel_pools
-                ],
-            )
-            for guild_id, guild_spec in config.guilds.items()
-        }
+        self.managed_guilds: dict[int, ManagedGuild] = {}
+        self._config_revisions: dict[int, int] = {}
+        self._config_source = config_source
         self._reconcile_lock = asyncio.Lock()
+        self._shutdown_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
+        await self._config_source.start(
+            self._apply_config_snapshot,
+            self._apply_config_change,
+        )
         self.cleanup_empty_channels.start()
+        # In a container the bot runs as PID 1, which ignores SIGTERM unless a
+        # handler is installed, so `podman stop` would otherwise SIGKILL it.
+        asyncio.get_running_loop().add_signal_handler(
+            signal.SIGTERM, self._on_sigterm
+        )
+
+    def _on_sigterm(self) -> None:
+        if self._shutdown_task is None:
+            log.info("Received SIGTERM, shutting down")
+            self._shutdown_task = asyncio.create_task(self.close())
+
+    async def close(self) -> None:
+        self.cleanup_empty_channels.cancel()
+        try:
+            await self._config_source.close()
+        finally:
+            await super().close()
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s", self.user)
@@ -73,10 +94,7 @@ class BotChan(commands.Bot):
         channel = after.channel or before.channel
         if channel is None:
             return
-        managed_guild = self.managed_guilds.get(channel.guild.id)
-        if managed_guild is None:
-            return
-        await self.reconcile_guild(managed_guild)
+        await self.reconcile_guild_id(channel.guild.id)
 
     async def reconcile_all_guilds(self) -> None:
         async with self._reconcile_lock:
@@ -86,6 +104,93 @@ class BotChan(commands.Bot):
     async def reconcile_guild(self, managed_guild: ManagedGuild) -> None:
         async with self._reconcile_lock:
             await self._reconcile_guild_unlocked(managed_guild)
+
+    async def reconcile_guild_id(self, guild_id: int) -> None:
+        async with self._reconcile_lock:
+            managed_guild = self.managed_guilds.get(guild_id)
+            if managed_guild is not None:
+                await self._reconcile_guild_unlocked(managed_guild)
+
+    async def _apply_config_snapshot(self, snapshot: ConfigSnapshot) -> None:
+        async with self._reconcile_lock:
+            changed_guild_ids: list[int] = []
+            new_guilds: dict[int, ManagedGuild] = {}
+            new_revisions: dict[int, int] = {}
+
+            for guild_id, versioned_config in snapshot.guilds.items():
+                existing = self.managed_guilds.get(guild_id)
+                new_guilds[guild_id] = self._build_managed_guild(
+                    versioned_config.spec, existing
+                )
+                new_revisions[guild_id] = versioned_config.revision
+                if self._config_revisions.get(guild_id) != versioned_config.revision:
+                    changed_guild_ids.append(guild_id)
+
+            for guild_id in snapshot.invalid_guild_ids:
+                existing = self.managed_guilds.get(guild_id)
+                revision = self._config_revisions.get(guild_id)
+                if existing is not None and revision is not None:
+                    new_guilds[guild_id] = existing
+                    new_revisions[guild_id] = revision
+
+            self.managed_guilds = new_guilds
+            self._config_revisions = new_revisions
+            log.info("Loaded configuration for %s guilds", len(new_guilds))
+
+            if self.is_ready():
+                for guild_id in changed_guild_ids:
+                    await self._reconcile_guild_unlocked(new_guilds[guild_id])
+
+    async def _apply_config_change(self, change: GuildConfigChange) -> None:
+        async with self._reconcile_lock:
+            if change.invalid:
+                return
+            if change.config is None:
+                self.managed_guilds.pop(change.guild_id, None)
+                self._config_revisions.pop(change.guild_id, None)
+                log.info("Stopped managing guild %s", change.guild_id)
+                return
+
+            current_revision = self._config_revisions.get(change.guild_id, 0)
+            if current_revision >= change.config.revision:
+                return
+            managed_guild = self._build_managed_guild(
+                change.config.spec,
+                self.managed_guilds.get(change.guild_id),
+            )
+            self.managed_guilds[change.guild_id] = managed_guild
+            self._config_revisions[change.guild_id] = change.config.revision
+            log.info(
+                "Loaded guild %s configuration revision %s",
+                change.guild_id,
+                change.config.revision,
+            )
+            if self.is_ready():
+                await self._reconcile_guild_unlocked(managed_guild)
+
+    @staticmethod
+    def _build_managed_guild(
+        spec: GuildSpec, existing: ManagedGuild | None
+    ) -> ManagedGuild:
+        previous_pools = (
+            {pool.spec.base_name: pool for pool in existing.pools}
+            if existing is not None
+            else {}
+        )
+        pools = []
+        for pool_spec in spec.channel_pools:
+            previous = previous_pools.get(pool_spec.base_name)
+            pools.append(
+                ManagedPool(
+                    spec=pool_spec,
+                    empty_since_by_channel_id=(
+                        previous.empty_since_by_channel_id
+                        if previous is not None
+                        else {}
+                    ),
+                )
+            )
+        return ManagedGuild(guild_id=spec.guild_id, pools=pools)
 
     async def _reconcile_guild_unlocked(self, managed_guild: ManagedGuild) -> None:
         guild = self.get_guild(managed_guild.guild_id)

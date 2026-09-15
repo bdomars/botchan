@@ -50,13 +50,14 @@ Channels numbered at or below the pool's `min_channels` are protected. With `min
 
 ## Configuration
 
-Application config is read from environment variables. Runtime guild and channel-pool specs are read from a JSON config file.
+Application config is read from environment variables. Runtime guild and channel-pool
+specs are stored in PostgreSQL and edited through the configuration API.
 
 Required:
 
 ```fish
 set -gx DISCORD_TOKEN "replace-with-bot-token"
-set -gx BOTCHAN_CONFIG "botchan.config.json"
+set -gx DATABASE_URL "postgresql+asyncpg://botchan:botchan@localhost/botchan"
 ```
 
 Optional:
@@ -65,41 +66,34 @@ Optional:
 set -gx LOG_LEVEL "INFO"
 ```
 
-`BOTCHAN_CONFIG` defaults to `botchan.config.json` when unset.
 `LOG_LEVEL` defaults to `INFO` when unset.
 
-Example runtime config:
+The stored configuration for a guild has this shape:
 
 ```json
 {
-  "guilds": [
+  "guild_id": "123456789012345678",
+  "channel_pools": [
     {
-      "guild_id": 123456789012345678,
-      "channel_pools": [
-        {
-          "base_name": "🎮│Other Games",
-          "min_channels": 3,
-          "max_channels": 10,
-          "idle_seconds": 300
-        },
-        {
-          "base_name": "Raid Rooms",
-          "min_channels": 1,
-          "max_channels": 5,
-          "idle_seconds": 600
-        }
-      ]
+      "base_name": "🎮│Other Games",
+      "min_channels": 3,
+      "max_channels": 10,
+      "idle_seconds": 300
+    },
+    {
+      "base_name": "Raid Rooms",
+      "min_channels": 1,
+      "max_channels": 5,
+      "idle_seconds": 600
     }
   ]
 }
 ```
 
-See `botchan.config.example.json` for a starter file.
+Apply migrations before starting the bot locally:
 
-`env.fish` contains a fish shell template for local testing:
-
-```fish
-source env.fish
+```bash
+uv run alembic upgrade head
 uv run python -m botchan
 ```
 
@@ -148,6 +142,7 @@ uv run uvicorn botchan_api.main:app --reload
 Configuration saves use optimistic ETags and emit a PostgreSQL notification on
 `botchan_config_changed` containing the guild ID and new revision. The database is
 the source of truth; notifications are only reload hints and are not a durable queue.
+The bot loads a complete snapshot at startup and after listener reconnections.
 
 ## Discord Permissions
 
@@ -177,6 +172,6 @@ node --test web/test_config_core.js
 
 ## Important Limitations
 
-- The bot only manages guilds listed in the config file.
+- The bot only manages guilds with a configuration stored in PostgreSQL.
 - The naming scheme is deterministic: base channel name for channel 1, then `#N` suffixes for channels 2 and up.
 - The bot needs at least one existing matching channel to use as a template for creating more channels.

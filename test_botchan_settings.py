@@ -7,17 +7,26 @@ from botchan.settings import load_bot_config
 
 class SettingsTests(unittest.TestCase):
     def test_load_bot_config_reads_token_and_defaults_log_level(self) -> None:
-        with patch.dict("os.environ", {"DISCORD_TOKEN": " token "}, clear=True):
+        with patch.dict(
+            "os.environ",
+            {"DISCORD_TOKEN": " token ", "DATABASE_URL": " postgresql://db/test "},
+            clear=True,
+        ):
             config = load_bot_config()
 
         self.assertEqual(config.token, "token")
+        self.assertEqual(config.database_url, "postgresql://db/test")
         self.assertEqual(config.log_level, logging.INFO)
         self.assertEqual(config.git_rev, "unknown")
 
     def test_load_bot_config_reads_git_revision(self) -> None:
         with patch.dict(
             "os.environ",
-            {"DISCORD_TOKEN": "token", "BOTCHAN_GIT_REV": "abc123"},
+            {
+                "DISCORD_TOKEN": "token",
+                "DATABASE_URL": "postgresql://db/test",
+                "BOTCHAN_GIT_REV": "abc123",
+            },
             clear=True,
         ):
             config = load_bot_config()
@@ -31,11 +40,22 @@ class SettingsTests(unittest.TestCase):
         ):
             load_bot_config()
 
+    def test_load_bot_config_rejects_missing_database_url(self) -> None:
+        with (
+            patch.dict("os.environ", {"DISCORD_TOKEN": "token"}, clear=True),
+            self.assertRaisesRegex(RuntimeError, "DATABASE_URL"),
+        ):
+            load_bot_config()
+
     def test_load_bot_config_rejects_unknown_log_level(self) -> None:
         with (
             patch.dict(
                 "os.environ",
-                {"DISCORD_TOKEN": "token", "LOG_LEVEL": "LOUD"},
+                {
+                    "DISCORD_TOKEN": "token",
+                    "DATABASE_URL": "postgresql://db/test",
+                    "LOG_LEVEL": "LOUD",
+                },
                 clear=True,
             ),
             self.assertRaisesRegex(RuntimeError, "Unknown LOG_LEVEL: LOUD"),

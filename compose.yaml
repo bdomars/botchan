@@ -43,5 +43,17 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://botchan:botchan@postgres/botchan
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   botchan-postgres:
