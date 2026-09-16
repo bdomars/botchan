@@ -150,6 +150,29 @@ button {
     padding: 28px 0 64px;
 }
 
+.site-footer {
+    width: min(960px, calc(100% - 48px));
+    margin: 0 auto;
+    padding: 20px 0 40px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.82rem;
+}
+
+.site-footer p {
+    margin: 0;
+}
+
+.site-footer a {
+    color: var(--purple-bright);
+    text-decoration: none;
+}
+
+.site-footer a:hover,
+.site-footer a:focus-visible {
+    text-decoration: underline;
+}
+
 .site-header,
 .intro,
 .panel-heading,
