@@ -229,6 +229,95 @@ class GuildLockTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(cleaned, [111])
 
+    async def test_sweep_keeps_running_after_a_guild_fails(self) -> None:
+        bot = await self.make_bot(111, 222)
+        cleaned: list[int] = []
+        second_sweep_done = asyncio.Event()
+
+        async def cleanup(managed_guild: Any) -> None:
+            if managed_guild.guild_id == 111:
+                raise ValueError("unexpected bug in one guild")
+            cleaned.append(managed_guild.guild_id)
+            if len(cleaned) == 2:
+                second_sweep_done.set()
+
+        sweep = bot.cleanup_empty_channels
+        sweep.change_interval(seconds=0.01)
+        with (
+            patch.object(bot, "_cleanup_guild_unlocked", new=cleanup),
+            patch.object(bot, "wait_until_ready", AsyncMock()),
+            self.assertLogs("botchan", "ERROR") as logs,
+        ):
+            sweep.start()
+            try:
+                await asyncio.wait_for(second_sweep_done.wait(), timeout=1)
+                self.assertTrue(sweep.is_running())
+            finally:
+                sweep.cancel()
+
+        self.assertEqual(cleaned, [222, 222])
+        self.assertIn("Cleanup failed for guild 111", logs.output[0])
+
+    async def test_on_ready_reconciles_remaining_guilds_after_a_failure(self) -> None:
+        bot = await self.make_bot(111, 222)
+        reconciled: list[int] = []
+
+        async def reconcile(managed_guild: Any) -> None:
+            if managed_guild.guild_id == 111:
+                raise ValueError("unexpected bug in one guild")
+            reconciled.append(managed_guild.guild_id)
+
+        with (
+            patch.object(bot, "_reconcile_guild_unlocked", new=reconcile),
+            self.assertLogs("botchan", "ERROR") as logs,
+        ):
+            await bot.on_ready()
+
+        self.assertEqual(reconciled, [222])
+        self.assertIn("Reconcile failed for guild 111", logs.output[0])
+
+    async def test_snapshot_reconciles_remaining_guilds_after_a_failure(self) -> None:
+        bot = await self.make_bot()
+        reconciled: list[int] = []
+
+        async def reconcile(managed_guild: Any) -> None:
+            if managed_guild.guild_id == 111:
+                raise ValueError("unexpected bug in one guild")
+            reconciled.append(managed_guild.guild_id)
+
+        with (
+            patch.object(bot, "_reconcile_guild_unlocked", new=reconcile),
+            patch.object(bot, "is_ready", return_value=True),
+            self.assertLogs("botchan", "ERROR") as logs,
+        ):
+            await bot._apply_config_snapshot(
+                ConfigSnapshot(
+                    guilds={111: versioned(111, 1), 222: versioned(222, 1)},
+                    invalid_guild_ids=set(),
+                )
+            )
+
+        self.assertEqual(reconciled, [222])
+        self.assertIn("Reconcile failed for guild 111", logs.output[0])
+
+    async def test_config_change_failure_does_not_reach_the_listener(self) -> None:
+        bot = await self.make_bot(111)
+
+        async def reconcile(_managed_guild: Any) -> None:
+            raise ValueError("unexpected bug in one guild")
+
+        with (
+            patch.object(bot, "_reconcile_guild_unlocked", new=reconcile),
+            patch.object(bot, "is_ready", return_value=True),
+            self.assertLogs("botchan", "ERROR") as logs,
+        ):
+            await bot._apply_config_change(
+                GuildConfigChange(guild_id=111, config=versioned(111, 2))
+            )
+
+        self.assertIn("Reconcile failed for guild 111", logs.output[0])
+        self.assertEqual(bot._config_revisions[111], 2)
+
     async def test_voice_events_in_unmanaged_guilds_create_no_lock(self) -> None:
         bot = await self.make_bot(111)
 

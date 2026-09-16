@@ -107,8 +107,15 @@ class BotChan(commands.Bot):
 
     async def reconcile_all_guilds(self) -> None:
         # Copy the IDs: config changes can edit managed_guilds while we await.
-        for guild_id in list(self.managed_guilds):
-            await self.reconcile_guild_id(guild_id)
+        await self._reconcile_guilds(list(self.managed_guilds))
+
+    async def _reconcile_guilds(self, guild_ids: list[int]) -> None:
+        for guild_id in guild_ids:
+            # One failing guild must not skip the rest of the pass.
+            try:
+                await self.reconcile_guild_id(guild_id)
+            except Exception:
+                log.exception("Reconcile failed for guild %s", guild_id)
 
     async def reconcile_guild_id(self, guild_id: int) -> None:
         if guild_id not in self.managed_guilds:
@@ -145,8 +152,7 @@ class BotChan(commands.Bot):
         log.info("Loaded configuration for %s guilds", len(new_guilds))
 
         if self.is_ready():
-            for guild_id in changed_guild_ids:
-                await self.reconcile_guild_id(guild_id)
+            await self._reconcile_guilds(changed_guild_ids)
 
     async def _apply_config_change(self, change: GuildConfigChange) -> None:
         if change.invalid:
@@ -171,7 +177,7 @@ class BotChan(commands.Bot):
             change.config.revision,
         )
         if self.is_ready():
-            await self.reconcile_guild_id(change.guild_id)
+            await self._reconcile_guilds([change.guild_id])
 
     @staticmethod
     def _build_managed_guild(
@@ -269,10 +275,15 @@ class BotChan(commands.Bot):
     @tasks.loop(seconds=CLEANUP_INTERVAL_SECONDS)
     async def cleanup_empty_channels(self) -> None:
         for guild_id in list(self.managed_guilds):
-            async with self._guild_lock(guild_id):
-                managed_guild = self.managed_guilds.get(guild_id)
-                if managed_guild is not None:
-                    await self._cleanup_guild_unlocked(managed_guild)
+            # discord.py stops the loop for good on most exceptions, so one
+            # failing guild must not escape and end cleanup for every guild.
+            try:
+                async with self._guild_lock(guild_id):
+                    managed_guild = self.managed_guilds.get(guild_id)
+                    if managed_guild is not None:
+                        await self._cleanup_guild_unlocked(managed_guild)
+            except Exception:
+                log.exception("Cleanup failed for guild %s", guild_id)
 
     async def _cleanup_guild_unlocked(self, managed_guild: ManagedGuild) -> None:
         guild = self.get_guild(managed_guild.guild_id)
