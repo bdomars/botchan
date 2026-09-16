@@ -138,6 +138,21 @@ def create_app(
 
     DB = Annotated[AsyncSession, Depends(db_session)]
 
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> JSONResponse:
+        # Liveness only: the process is up and serving. Deliberately does not
+        # touch the database, so a database outage never restarts the pods.
+        return JSONResponse({"status": "ok"})
+
+    @app.get("/readyz", include_in_schema=False)
+    async def readyz(db: DB) -> JSONResponse:
+        try:
+            await db.execute(text("SELECT 1"))
+        except Exception:
+            log.exception("Readiness check failed")
+            return JSONResponse(status_code=503, content={"status": "no database"})
+        return JSONResponse({"status": "ok"})
+
     async def authenticated_session(request: Request, db: DB) -> OAuthSession:
         raw = request.cookies.get(SESSION_COOKIE)
         if not raw:

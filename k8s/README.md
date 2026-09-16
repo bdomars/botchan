@@ -131,6 +131,6 @@ Both images are published by CI on every push to `main`, tagged `latest` and `sh
 - **Keep the bot at one replica.** Two bots on one Discord token would both manage the same voice channels and fight over creating and deleting them. The bot Deployment uses the `Recreate` strategy for the same reason, so a rollout never has two running at once.
 - **Migrations run as an init container** on the API, on every rollout, so the API never serves against an old schema. Alembic does nothing when the database is already current.
 - **Passwords aren't URL-encoded.** `DATABASE_URL` is assembled by string substitution, so a password containing `@ : / ? # %` will break it. CNPG-generated passwords are alphanumeric. Note that a `%` also breaks Alembic, which reads the URL through a config parser.
-- **The API's probes request `/`**, which is the static web UI and needs no login. They check that the server responds, not that the database is reachable.
+- **The probes are split by purpose.** Readiness requests `/readyz`, which runs `SELECT 1`, so a pod leaves the Service while the database is unreachable. Liveness requests `/healthz`, which never touches the database, so a database outage doesn't restart the pods. Neither needs a login.
 - **Neither service needs Kubernetes API access**, so both run with `automountServiceAccountToken: false`, a read-only root filesystem, no added capabilities and as a non-root user.
 - **Only memory has a limit.** Throttling the bot's CPU causes gateway heartbeat timeouts and reconnects.

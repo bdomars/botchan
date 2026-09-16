@@ -139,6 +139,10 @@ uv run alembic upgrade head
 uv run uvicorn botchan_api.main:app --reload
 ```
 
+The service exposes two unauthenticated probe endpoints: `/healthz` reports that
+the process is serving, and `/readyz` also checks that the database answers,
+returning 503 when it does not.
+
 Configuration saves use optimistic ETags and emit a PostgreSQL notification on
 `botchan_config_changed` containing the guild ID and new revision. The database is
 the source of truth; notifications are only reload hints and are not a durable queue.
