@@ -16,8 +16,19 @@ jobs:
       contents: read
       packages: write
 
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The bot, published as <repository>
+          - dockerfile: Dockerfile
+            suffix: ""
+          # The configuration API and web UI, published as <repository>-api
+          - dockerfile: Dockerfile.api
+            suffix: "-api"
+
     concurrency:
-      group: publish-image-${{ github.ref }}
+      group: publish-image-${{ github.ref }}-${{ matrix.dockerfile }}
       cancel-in-progress: true
 
     steps:
@@ -38,7 +49,7 @@ jobs:
         id: metadata
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
           tags: |
             type=raw,value=latest
             type=sha,prefix=sha-
@@ -47,10 +58,12 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           build-args: |
             GIT_REV=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Separate scopes, so the two images don't evict each other's cache.
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.dockerfile }}
