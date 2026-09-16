@@ -6,8 +6,20 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 FROM python:3.14-slim-bookworm
+
+ARG GIT_REV=unknown
+
+LABEL org.opencontainers.image.title="botchan-api" \
+      org.opencontainers.image.description="Configuration API and web editor for BotChan" \
+      org.opencontainers.image.revision="${GIT_REV}" \
+      org.opencontainers.image.source="https://github.com/bdomars/botchan" \
+      org.opencontainers.image.url="https://ghcr.io/bdomars/botchan-api"
+
 WORKDIR /app
-ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+ENV PATH="/app/.venv/bin:$PATH" \
+    BOTCHAN_GIT_REV="${GIT_REV}" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
