@@ -336,11 +336,6 @@ def create_app(
             },
         }
 
-    @app.get("/api/health")
-    async def health(db: DB) -> dict[str, str]:
-        await db.execute(text("SELECT 1"))
-        return {"status": "ok"}
-
     @app.post("/auth/logout")
     async def logout(request: Request, db: DB, oauth_session: AuthSession) -> JSONResponse:
         check_csrf(request, oauth_session)
