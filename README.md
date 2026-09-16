@@ -175,3 +175,13 @@ node --test web/test_config_core.js
 - The bot only manages guilds with a configuration stored in PostgreSQL.
 - The naming scheme is deterministic: base channel name for channel 1, then `#N` suffixes for channels 2 and up.
 - The bot needs at least one existing matching channel to use as a template for creating more channels.
+
+## License
+
+Copyright (C) 2026 Björn Domars.
+
+BotChan is free software under the [GNU Affero General Public License, version
+3 or later](LICENSE). You may run, study, share and modify it. If you modify it
+and let other people use it over a network, including as a hosted service, you
+must offer those users the complete source of your modified version under the
+same license.

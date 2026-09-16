@@ -16,7 +16,8 @@ LABEL org.opencontainers.image.title="botchan" \
       org.opencontainers.image.description="Discord bot for managing pools of temporary voice channels" \
       org.opencontainers.image.revision="${GIT_REV}" \
       org.opencontainers.image.source="https://github.com/bdomars/botchan" \
-      org.opencontainers.image.url="https://ghcr.io/bdomars/botchan"
+      org.opencontainers.image.url="https://ghcr.io/bdomars/botchan" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
 
 WORKDIR /app
 
@@ -28,6 +29,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin botchan
 
 COPY --from=builder /app/.venv /app/.venv
+COPY LICENSE ./
 COPY botchan ./botchan
 
 USER 10001:10001

@@ -1,8 +1,10 @@
 [project]
 name = "botchan"
 version = "0.1.0"
-description = "Add your description here"
+description = "Discord bot for managing pools of temporary voice channels"
 readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
     "alembic>=1.16",

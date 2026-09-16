@@ -6,6 +6,15 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 FROM python:3.14-slim-bookworm
+ARG GIT_REV=unknown
+
+LABEL org.opencontainers.image.title="botchan-api" \
+      org.opencontainers.image.description="Configuration API and web editor for BotChan" \
+      org.opencontainers.image.revision="${GIT_REV}" \
+      org.opencontainers.image.source="https://github.com/bdomars/botchan" \
+      org.opencontainers.image.url="https://ghcr.io/bdomars/botchan-api" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
+
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 RUN apt-get update \
@@ -13,7 +22,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin botchan
 COPY --from=builder /app/.venv /app/.venv
-COPY alembic.ini botchan.png ./
+COPY alembic.ini botchan.png LICENSE ./
 COPY botchan ./botchan
 COPY migrations ./migrations
 COPY botchan_api ./botchan_api
