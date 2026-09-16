@@ -1,0 +1,25 @@
+# Sample Ingress. Class, TLS and annotations differ per cluster, so the base
+# ships none. The host must match PUBLIC_BASE_URL and DISCORD_REDIRECT_URI.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: botchan
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - botchan.example.com
+      secretName: botchan-tls
+  rules:
+    - host: botchan.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: botchan-api
+                port:
+                  name: http

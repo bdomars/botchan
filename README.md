@@ -144,6 +144,12 @@ Configuration saves use optimistic ETags and emit a PostgreSQL notification on
 the source of truth; notifications are only reload hints and are not a durable queue.
 The bot loads a complete snapshot at startup and after listener reconnections.
 
+## Kubernetes
+
+`k8s/base` holds a sample deployment to reference from your own kustomization,
+and `k8s/example` shows a complete one using CloudNativePG for the database.
+See [k8s/README.md](k8s/README.md).
+
 ## Discord Permissions
 
 The bot needs enough permissions in the target guild to:

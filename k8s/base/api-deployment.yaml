@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: botchan-api
+  labels:
+    app.kubernetes.io/name: botchan
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: botchan
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: botchan
+        app.kubernetes.io/component: api
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Runs on every rollout, so the API never serves against an old schema.
+        # Alembic is a no-op when the database is already up to date.
+        - name: migrate
+          image: ghcr.io/bdomars/botchan-api
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: password
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: host
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: port
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: dbname
+            - name: DATABASE_URL
+              value: postgresql+asyncpg://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: api
+          image: ghcr.io/bdomars/botchan-api
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            # Every key in this secret is an environment variable the API
+            # needs: DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_TOKEN,
+            # SESSION_SECRET and TOKEN_ENCRYPTION_KEY.
+            - secretRef:
+                name: botchan-discord
+            - configMapRef:
+                name: botchan-config
+          env:
+            # Built from the parts of a CNPG-style secret. To use a different
+            # secret, change the five names below (see README.md).
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: password
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: host
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: port
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: botchan-db-app
+                  key: dbname
+            - name: DATABASE_URL
+              value: postgresql+asyncpg://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_NAME)
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
