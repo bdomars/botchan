@@ -124,5 +124,45 @@ class DiscordClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_count, MAX_RATE_LIMIT_RETRIES + 1)
 
 
+class ProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        from botchan_api.app import create_app
+        from botchan_api.settings import Settings
+
+        # Points at a closed port: create_async_engine connects lazily, so the
+        # app builds and only the database probe fails.
+        settings = Settings(
+            database_url="postgresql+asyncpg://nobody:nothing@127.0.0.1:1/botchan",
+            discord_client_id="123456789012345678",
+            discord_client_secret="secret",
+            discord_bot_token="bot-token",
+            discord_redirect_uri="http://test/auth/discord/callback",
+            public_base_url="http://test",
+            session_secret="session-secret",
+            token_encryption_key=Fernet.generate_key().decode(),
+            secure_cookies=False,
+        )
+        app = create_app(settings, discord=object())
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.client.aclose()
+
+    async def test_liveness_does_not_depend_on_the_database(self) -> None:
+        response = await self.client.get("/healthz")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+
+    async def test_readiness_fails_without_a_database(self) -> None:
+        with self.assertLogs("botchan.api", "ERROR"):
+            response = await self.client.get("/readyz")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"status": "no database"})
+
+
 if __name__ == "__main__":
     unittest.main()

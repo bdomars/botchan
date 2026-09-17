@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: botchan-config
+  labels:
+    app.kubernetes.io/name: botchan
+data:
+  # The URL the web UI is reached on. Must match the redirect URI registered
+  # in the Discord Developer Portal.
+  PUBLIC_BASE_URL: "http://localhost:8000"
+  DISCORD_REDIRECT_URI: "http://localhost:8000/auth/discord/callback"
+  # Keep "true" wherever the UI is served over HTTPS.
+  SECURE_COOKIES: "true"
+  LOG_LEVEL: "INFO"

@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# A complete deployment built on the sample base: CloudNativePG for the
+# database, your own secret, your own hostname. Copy this directory and edit.
+
+namespace: botchan
+
+resources:
+  # From your own repository, use the remote form instead:
+  #   - github.com/bdomars/botchan//k8s/base?ref=main
+  - ../base
+  - cnpg-cluster.yaml
+  - ingress.yaml
+
+# Creates botchan-discord from a local env file. Kustomize appends a hash to
+# the name and rewrites the references in the base, so editing a value rolls
+# the pods automatically. Keep discord.env out of git.
+secretGenerator:
+  - name: botchan-discord
+    envs:
+      - discord.env
+
+# The base ConfigMap ships localhost defaults. Point them at your hostname.
+patches:
+  - target:
+      kind: ConfigMap
+      name: botchan-config
+    patch: |
+      - op: replace
+        path: /data/PUBLIC_BASE_URL
+        value: https://botchan.example.com
+      - op: replace
+        path: /data/DISCORD_REDIRECT_URI
+        value: https://botchan.example.com/auth/discord/callback
+
+images:
+  - name: ghcr.io/bdomars/botchan
+    newTag: sha-0123456
+  - name: ghcr.io/bdomars/botchan-api
+    newTag: sha-0123456

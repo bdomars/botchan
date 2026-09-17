@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Sample base for BotChan. Reference it from your own kustomization:
+#
+#   resources:
+#     - github.com/bdomars/botchan//k8s/base?ref=main
+#
+# It deliberately ships no Secret and no namespace. See README.md for the
+# secrets it expects and for a CNPG example.
+
+resources:
+  - configmap.yaml
+  - bot-deployment.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: botchan
+
+# Override the tag, or point at your own registry, from your kustomization:
+#
+#   images:
+#     - name: ghcr.io/bdomars/botchan
+#       newTag: sha-1a2b3c4
+#
+images:
+  - name: ghcr.io/bdomars/botchan
+    newTag: latest
+  - name: ghcr.io/bdomars/botchan-api
+    newTag: latest

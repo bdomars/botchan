@@ -1,0 +1,17 @@
+# A minimal CloudNativePG cluster. Requires the CNPG operator in the cluster.
+#
+# The name matters: CNPG creates the secret <name>-app, so botchan-db gives
+# botchan-db-app, exactly the name the base already reads.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: botchan-db
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  storage:
+    size: 2Gi
+  bootstrap:
+    initdb:
+      database: botchan
+      owner: botchan

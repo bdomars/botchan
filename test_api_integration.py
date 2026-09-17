@@ -89,6 +89,14 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         await self.app.state.engine.dispose()
 
+    async def test_probes_report_ready_against_a_real_database(self) -> None:
+        health = await self.client.get("/healthz")
+        ready = await self.client.get("/readyz")
+
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(ready.status_code, 200)
+        self.assertEqual(ready.json(), {"status": "ok"})
+
     async def test_first_save_get_and_stale_save(self) -> None:
         import asyncpg
         from sqlalchemy import func, select
