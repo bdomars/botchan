@@ -8,6 +8,25 @@ The original use case is an "Other Games" area: keep a minimum number of voice c
 
 ## How It Works
 
+### Setting up a pool
+
+Add a pool in the editor and the bot takes it from there. It creates the pool's
+channels itself, with Discord's default settings and no category:
+
+```text
+🎮│Other Games
+```
+
+Move that channel where you want it and set it up however you like — category,
+permissions, bitrate, user limit, region, video quality. The bot copies those
+settings onto every other channel in the pool and keeps them there, so the base
+channel is the only one you ever configure. There is no template to define and
+nothing to configure on BotChan's side beyond the pool itself.
+
+Change the base channel later and the rest of the pool follows within a second.
+
+### Keeping the pool sized
+
 The bot manages voice channels whose names match a configured channel-pool base name:
 
 ```text
@@ -46,7 +65,9 @@ Channels numbered at or below the pool's `min_channels` are protected. With `min
 - Occupied channels are never deleted.
 - Channels numbered `1..min` are never deleted.
 - If duplicate managed channel numbers exist, such as two `Other Games #4` channels, the bot skips create/delete actions and logs a warning.
-- New channels are cloned from the base channel when possible, including category, permissions, bitrate, user limit, RTC region, and video quality mode.
+- New channels are cloned from the base channel, including category, permissions, bitrate, user limit, RTC region, and video quality mode.
+- Those settings are kept in sync afterwards: edit the base channel and the rest of the pool follows.
+- A setting the bot cannot apply is attempted once, not retried in a loop.
 
 ## Configuration
 
@@ -158,7 +179,15 @@ See [k8s/README.md](k8s/README.md).
 
 The bot needs enough permissions in the target guild to:
 
-- Manage channels.
+- Manage channels, to create and delete them.
+- Manage roles, to copy permission overwrites from a pool's base channel to the
+  rest of the pool. Discord treats editing channel permissions as a role
+  operation, so without this the bot syncs everything except permissions and
+  logs a warning.
+
+If BotChan was added before it synced permissions, it holds Manage Channels
+only. The editor shows a prompt for those servers; following it re-authorizes
+the bot with the permissions it now needs.
 
 It also needs Discord gateway intents for guilds and voice states. The code enables those intents when creating the bot client.
 
@@ -184,7 +213,9 @@ node --test web/test_config_core.js
 
 - The bot only manages guilds with a configuration stored in PostgreSQL.
 - The naming scheme is deterministic: base channel name for channel 1, then `#N` suffixes for channels 2 and up.
-- The bot needs at least one existing matching channel to use as a template for creating more channels.
+- Channel matching is by name across the whole guild, so an unrelated voice channel that happens to match a pool's naming scheme is adopted into that pool.
+- Renaming a channel in Discord removes it from its pool rather than renaming the pool. The channel is left alone from then on, and the bot creates a replacement to restore the pool's minimum. Rename the pool in the editor instead.
+- Channel order inside a category is left to Discord after the base channel moves; only newly created channels are positioned explicitly.
 
 ## License
 

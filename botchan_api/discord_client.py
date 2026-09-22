@@ -98,8 +98,9 @@ class DiscordClient:
         )
         return await self._json(response)
 
-    async def bot_guild_ids(self) -> set[str]:
-        result: set[str] = set()
+    async def bot_guilds(self) -> dict[str, int]:
+        """Map each guild the bot is in to the permissions it holds there."""
+        result: dict[str, int] = {}
         after: str | None = None
         while True:
             params = {"limit": 200}
@@ -112,7 +113,12 @@ class DiscordClient:
                 headers={"Authorization": f"Bot {self.settings.discord_bot_token}"},
             )
             page = await self._json(response)
-            result.update(str(guild["id"]) for guild in page)
+            for guild in page:
+                try:
+                    permissions = int(guild.get("permissions", 0))
+                except (TypeError, ValueError):
+                    permissions = 0
+                result[str(guild["id"])] = permissions
             if len(page) < 200:
                 return result
             after = str(page[-1]["id"])

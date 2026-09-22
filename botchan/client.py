@@ -19,20 +19,33 @@ from botchan.database_config import (
 from botchan.reconciliation import (
     ReconcilePlan,
     base_channel,
+    canonical_managed_channels,
+    channels_needing_sync,
     parse_channel_number,
     plan_reconcile,
     refresh_empty_timers,
+    settings_fingerprint,
 )
 
 log = logging.getLogger("botchan")
 
 CLEANUP_INTERVAL_SECONDS = 30
 
+# (settings requested, settings the channel had once the edit returned)
+type SyncRecord = tuple[tuple[object, ...], tuple[object, ...]]
+
 
 @dataclass
 class ManagedPool:
     spec: ChannelPoolSpec
     empty_since_by_channel_id: dict[int, float] = field(default_factory=dict)
+    # Per channel, the last sync we attempted: what we asked for, and what the
+    # channel looked like once the edit returned. Every edit we make comes back
+    # as a channel update event, so a value Discord clamps or rejects would
+    # otherwise never match the base channel and we would edit forever.
+    # Comparing the observed half too means a channel an admin has since
+    # changed is still resynced, because it no longer looks the way we left it.
+    last_sync_by_channel_id: dict[int, SyncRecord] = field(default_factory=dict)
 
 
 @dataclass
@@ -97,6 +110,56 @@ class BotChan(commands.Bot):
         channel = after.channel or before.channel
         if channel is None:
             return
+        await self.reconcile_guild_id(channel.guild.id)
+
+    @staticmethod
+    def _touches_a_pool(managed_guild: ManagedGuild, *names: str) -> bool:
+        return any(
+            parse_channel_number(name, pool.spec) is not None
+            for pool in managed_guild.pools
+            for name in names
+        )
+
+    async def on_guild_channel_update(
+        self,
+        before: discord.abc.GuildChannel,
+        after: discord.abc.GuildChannel,
+    ) -> None:
+        if not isinstance(after, discord.VoiceChannel):
+            return
+        managed_guild = self.managed_guilds.get(after.guild.id)
+        if managed_guild is None:
+            return
+
+        was = before.name if isinstance(before, discord.VoiceChannel) else after.name
+
+        # Both names matter: a rename can carry a channel into a pool or out of
+        # one, and leaving drops the pool below its minimum just as surely as a
+        # deletion would.
+        if not self._touches_a_pool(managed_guild, was, after.name):
+            return
+
+        # A rename alone is a change even when no synced setting moved.
+        if (
+            isinstance(before, discord.VoiceChannel)
+            and was == after.name
+            and settings_fingerprint(before) == settings_fingerprint(after)
+        ):
+            return
+
+        await self.reconcile_guild_id(after.guild.id)
+
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
+        if not isinstance(channel, discord.VoiceChannel):
+            return
+        managed_guild = self.managed_guilds.get(channel.guild.id)
+        if managed_guild is None:
+            return
+        if not self._touches_a_pool(managed_guild, channel.name):
+            return
+
+        # Our own deletions land here too. Those leave the pool at its desired
+        # count, so the pass they trigger finds nothing to do.
         await self.reconcile_guild_id(channel.guild.id)
 
     def _guild_lock(self, guild_id: int) -> asyncio.Lock:
@@ -199,6 +262,9 @@ class BotChan(commands.Bot):
                         if previous is not None
                         else {}
                     ),
+                    last_sync_by_channel_id=(
+                        previous.last_sync_by_channel_id if previous is not None else {}
+                    ),
                 )
             )
         return ManagedGuild(guild_id=spec.guild_id, pools=pools)
@@ -256,21 +322,29 @@ class BotChan(commands.Bot):
         if plan is None:
             return
 
-        template = base_channel(channels, pool.spec)
-        if plan.create_numbers and template is None:
-            log.error(
-                "No matching %s channel exists in guild %s to use as a creation template",
-                pool.spec.base_name,
-                guild.id,
-            )
-            return
+        # Track created channels locally: the guild snapshot is taken once per
+        # pass, so without this the second channel of a fresh pool has nothing
+        # to clone and lands on the same position as the first.
+        working = list(channels)
+        template = base_channel(working, pool.spec)
 
         for number in plan.create_numbers:
-            if not isinstance(template, discord.VoiceChannel):
-                return
-            await self._create_channel(guild, pool.spec, template, number, channels)
+            new_channel = await self._create_channel(
+                guild, pool.spec, template, number, working
+            )
+            if new_channel is None:
+                break
+            working.append(new_channel)
+            # The seed channel becomes the template for the rest of this pass.
+            if template is None:
+                template = new_channel
 
         await self._delete_channels(pool, plan.delete_channel_ids)
+
+        deleted = set(plan.delete_channel_ids)
+        await self._sync_pool_settings(
+            guild, [c for c in working if c.id not in deleted], pool
+        )
 
     @tasks.loop(seconds=CLEANUP_INTERVAL_SECONDS)
     async def cleanup_empty_channels(self) -> None:
@@ -297,6 +371,11 @@ class BotChan(commands.Bot):
                 continue
             await self._delete_channels(pool, plan.delete_channel_ids)
 
+            deleted = set(plan.delete_channel_ids)
+            await self._sync_pool_settings(
+                guild, [c for c in channels if c.id not in deleted], pool
+            )
+
     @cleanup_empty_channels.before_loop
     async def before_cleanup_empty_channels(self) -> None:
         await self.wait_until_ready()
@@ -305,26 +384,106 @@ class BotChan(commands.Bot):
         self,
         guild: discord.Guild,
         spec: ChannelPoolSpec,
-        template: discord.VoiceChannel,
+        template: discord.VoiceChannel | None,
         number: int,
         channels: Iterable[discord.VoiceChannel],
-    ) -> None:
+    ) -> discord.VoiceChannel | None:
         try:
-            new_channel = await guild.create_voice_channel(
-                name=spec.channel_name(number),
-                category=template.category,
-                overwrites=template.overwrites,
-                bitrate=template.bitrate,
-                user_limit=template.user_limit,
-                rtc_region=template.rtc_region,
-                video_quality_mode=template.video_quality_mode,
-                reason=f"All {spec.base_name} voice channels are occupied",
-            )
-            await self._position_after_highest_managed(new_channel, channels, spec)
-            log.info("Created channel %s in guild %s", new_channel.name, guild.id)
+            if template is None:
+                # The pool is empty, so seed it with a bare channel and let
+                # Discord apply its defaults. An admin customizes that channel
+                # in Discord and the sync carries the result to the rest.
+                new_channel = await guild.create_voice_channel(
+                    name=spec.channel_name(number),
+                    reason=f"Seeding the {spec.base_name} channel pool",
+                )
+            else:
+                new_channel = await guild.create_voice_channel(
+                    name=spec.channel_name(number),
+                    category=template.category,
+                    overwrites=template.overwrites,
+                    bitrate=template.bitrate,
+                    user_limit=template.user_limit,
+                    rtc_region=template.rtc_region,
+                    video_quality_mode=template.video_quality_mode,
+                    reason=f"All {spec.base_name} voice channels are occupied",
+                )
         except discord.DiscordException:
             log.exception(
                 "Failed to create %s in guild %s", spec.channel_name(number), guild.id
+            )
+            return None
+
+        await self._position_after_highest_managed(new_channel, channels, spec)
+        log.info("Created channel %s in guild %s", new_channel.name, guild.id)
+        return new_channel
+
+    async def _sync_pool_settings(
+        self,
+        guild: discord.Guild,
+        channels: list[discord.VoiceChannel],
+        pool: ManagedPool,
+    ) -> None:
+        template = base_channel(channels, pool.spec)
+        if template is None:
+            pool.last_sync_by_channel_id.clear()
+            return
+
+        managed_ids = {
+            channel.id
+            for channel in canonical_managed_channels(channels, pool.spec).values()
+        }
+        for channel_id in set(pool.last_sync_by_channel_id) - managed_ids:
+            pool.last_sync_by_channel_id.pop(channel_id, None)
+
+        desired = settings_fingerprint(template)
+        for channel in channels_needing_sync(channels, pool.spec):
+            # Nothing has moved since our last attempt on this channel, so
+            # repeating it would produce the same result and loop forever.
+            if pool.last_sync_by_channel_id.get(channel.id) == (
+                desired,
+                settings_fingerprint(channel),
+            ):
+                continue
+
+            applied = channel
+            try:
+                edited = await channel.edit(
+                    category=template.category,
+                    overwrites=template.overwrites,
+                    bitrate=template.bitrate,
+                    user_limit=template.user_limit,
+                    rtc_region=template.rtc_region,
+                    video_quality_mode=template.video_quality_mode,
+                    reason=f"Sync with the {pool.spec.base_name} base channel",
+                )
+                if edited is not None:
+                    # discord.py 2.x returns the edited channel rather than
+                    # updating in place; the cached one lags until the gateway
+                    # event lands.
+                    applied = edited
+                log.info(
+                    "Synced channel %s in guild %s with %s",
+                    channel.name,
+                    guild.id,
+                    template.name,
+                )
+            except discord.Forbidden:
+                log.warning(
+                    "Cannot sync %s in guild %s: BotChan needs Manage Channels and "
+                    "Manage Roles to copy permissions from %s",
+                    channel.name,
+                    guild.id,
+                    template.name,
+                )
+            except discord.DiscordException:
+                log.exception(
+                    "Failed to sync channel %s in guild %s", channel.name, guild.id
+                )
+
+            pool.last_sync_by_channel_id[channel.id] = (
+                desired,
+                settings_fingerprint(applied),
             )
 
     async def _delete_channels(

@@ -30,6 +30,11 @@ SESSION_COOKIE = "botchan_session"
 OAUTH_STATE_COOKIE = "botchan_oauth_state"
 MANAGE_GUILD = 1 << 5
 ADMINISTRATOR = 1 << 3
+MANAGE_CHANNELS = 1 << 4
+# Copying permission overwrites from a pool's base channel to the rest of the
+# pool is a permission edit, which Discord gates behind Manage Roles.
+MANAGE_ROLES = 1 << 28
+BOT_PERMISSIONS = MANAGE_CHANNELS | MANAGE_ROLES
 BOT_GUILD_CACHE_SECONDS = 30
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 PROJECT_ROOT = WEB_ROOT.parent
@@ -71,6 +76,13 @@ def valid_snowflake(value: str) -> bool:
     return value.isdigit() and value[0] != "0" and len(value) <= 20
 
 
+def has_bot_permissions(granted: int) -> bool:
+    """Whether a guild grants the bot everything it needs to manage pools."""
+    if granted & ADMINISTRATOR:
+        return True
+    return granted & BOT_PERMISSIONS == BOT_PERMISSIONS
+
+
 def create_app(
     settings: Settings | None = None,
     discord: Any = None,
@@ -87,21 +99,21 @@ def create_app(
     app.state.security = security
     app.state.discord = discord
 
-    bot_guild_cache: set[str] | None = None
+    bot_guild_cache: dict[str, int] | None = None
     bot_guild_cache_expires_at = 0.0
     bot_guild_cache_lock = asyncio.Lock()
 
-    async def bot_guild_ids() -> set[str]:
+    async def bot_guilds() -> dict[str, int]:
         nonlocal bot_guild_cache, bot_guild_cache_expires_at
         if bot_guild_cache is not None and time.monotonic() < bot_guild_cache_expires_at:
             return bot_guild_cache
         async with bot_guild_cache_lock:
             if bot_guild_cache is not None and time.monotonic() < bot_guild_cache_expires_at:
                 return bot_guild_cache
-            guild_ids = await discord.bot_guild_ids()
-            bot_guild_cache = guild_ids
+            guilds = await discord.bot_guilds()
+            bot_guild_cache = guilds
             bot_guild_cache_expires_at = time.monotonic() + BOT_GUILD_CACHE_SECONDS
-            return guild_ids
+            return guilds
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: RequestResponseEndpoint):
@@ -226,7 +238,7 @@ def create_app(
             raise error(403, "GUILD_ACCESS_DENIED", "You cannot manage this guild.")
         if require_installed:
             try:
-                installed = guild_id in await bot_guild_ids()
+                installed = guild_id in await bot_guilds()
             except DiscordAPIError as exc:
                 log.exception("Discord bot installation check failed: %s", exc)
                 raise error(503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked.") from exc
@@ -353,7 +365,7 @@ def create_app(
     async def guild_list(db: DB, oauth_session: AuthSession) -> dict[str, Any]:
         guilds = [g for g in await user_guilds(oauth_session, db, force=False) if manageable(g)]
         try:
-            installed_ids = await bot_guild_ids()
+            bot_permissions = await bot_guilds()
         except DiscordAPIError as exc:
             log.exception("Discord bot installation check failed: %s", exc)
             raise error(503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked.") from exc
@@ -368,12 +380,16 @@ def create_app(
         for guild in sorted(guilds, key=lambda item: item["name"].casefold()):
             guild_id = str(guild["id"])
             icon = guild.get("icon")
-            installed = guild_id in installed_ids
+            installed = guild_id in bot_permissions
+            granted = bot_permissions.get(guild_id, 0)
+            # Re-authorizing an installed bot updates its permissions, so the
+            # same install link doubles as the fix for a stale grant.
+            needs_permissions = installed and not has_bot_permissions(granted)
             install_query = urlencode(
                 {
                     "client_id": settings.discord_client_id,
                     "scope": "bot",
-                    "permissions": str(1 << 4),
+                    "permissions": str(BOT_PERMISSIONS),
                     "guild_id": guild_id,
                     "disable_guild_select": "true",
                 }
@@ -388,6 +404,7 @@ def create_app(
                         else None
                     ),
                     "installed": installed,
+                    "needs_permissions": needs_permissions,
                     "configured": guild_id in revisions,
                     "revision": revisions.get(guild_id),
                     "install_url": f"https://discord.com/oauth2/authorize?{install_query}",

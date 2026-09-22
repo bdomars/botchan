@@ -15,12 +15,25 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         import httpx
         from sqlalchemy import delete
 
-        from botchan_api.app import create_app, now
+        from botchan_api.app import (
+            ADMINISTRATOR,
+            BOT_PERMISSIONS,
+            MANAGE_CHANNELS,
+            create_app,
+            now,
+        )
         from botchan_api.models import GuildConfigRow, GuildConfigVersion, OAuthSession
         from botchan_api.settings import Settings
 
-        self.discord_calls = {"user_guilds": 0, "bot_guild_ids": 0}
+        self.discord_calls = {"user_guilds": 0, "bot_guilds": 0}
         discord_calls = self.discord_calls
+        # Tests override this before their first request; the app caches the
+        # result for 30 seconds, so later mutations within a test are ignored.
+        self.bot_permissions = {"123456789012345678": BOT_PERMISSIONS}
+        bot_permissions = self.bot_permissions
+        self.required_bits = BOT_PERMISSIONS
+        self.manage_channels_bit = MANAGE_CHANNELS
+        self.administrator_bit = ADMINISTRATOR
 
         class FakeDiscord:
             async def user_guilds(_self, _access_token):
@@ -35,9 +48,9 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     }
                 ]
 
-            async def bot_guild_ids(_self):
-                discord_calls["bot_guild_ids"] += 1
-                return {"123456789012345678"}
+            async def bot_guilds(_self):
+                discord_calls["bot_guilds"] += 1
+                return dict(bot_permissions)
 
             async def refresh(_self, _refresh_token):
                 raise AssertionError("token should not need refresh")
@@ -96,6 +109,32 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(health.status_code, 200)
         self.assertEqual(ready.status_code, 200)
         self.assertEqual(ready.json(), {"status": "ok"})
+
+    async def test_guild_list_reports_installation_and_permissions(self) -> None:
+        response = await self.client.get("/api/guilds")
+
+        self.assertEqual(response.status_code, 200)
+        guild = response.json()["guilds"][0]
+        self.assertTrue(guild["installed"])
+        self.assertFalse(guild["needs_permissions"])
+        self.assertIn(f"permissions={self.required_bits}", guild["install_url"])
+
+    async def test_guild_list_flags_a_stale_permission_grant(self) -> None:
+        # The grant BotChan shipped with before it synced channel permissions.
+        self.bot_permissions["123456789012345678"] = self.manage_channels_bit
+
+        response = await self.client.get("/api/guilds")
+
+        guild = response.json()["guilds"][0]
+        self.assertTrue(guild["installed"])
+        self.assertTrue(guild["needs_permissions"])
+
+    async def test_guild_list_accepts_administrator_in_place_of_both(self) -> None:
+        self.bot_permissions["123456789012345678"] = self.administrator_bit
+
+        response = await self.client.get("/api/guilds")
+
+        self.assertFalse(response.json()["guilds"][0]["needs_permissions"])
 
     async def test_first_save_get_and_stale_save(self) -> None:
         import asyncpg
@@ -163,7 +202,7 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             headers={"X-CSRF-Token": "csrf-token", "If-None-Match": "*"},
         )
         self.assertEqual(stale.status_code, 412)
-        self.assertEqual(self.discord_calls, {"user_guilds": 2, "bot_guild_ids": 1})
+        self.assertEqual(self.discord_calls, {"user_guilds": 2, "bot_guilds": 1})
         async with self.app.state.session_factory() as db:
             version_count = await db.scalar(select(func.count()).select_from(GuildConfigVersion))
         self.assertEqual(version_count, 1)

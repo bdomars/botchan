@@ -6,6 +6,17 @@ from typing import Protocol
 
 from botchan.config import ChannelPoolSpec
 
+# Channel settings propagated from a pool's base channel to the rest of the
+# pool. Kept in one place so the diff and the Discord edit cannot drift apart.
+SYNCED_ATTRIBUTES = (
+    "category_id",
+    "overwrites",
+    "bitrate",
+    "user_limit",
+    "rtc_region",
+    "video_quality_mode",
+)
+
 
 class ManagedVoiceChannel(Protocol):
     @property
@@ -16,6 +27,29 @@ class ManagedVoiceChannel(Protocol):
 
     @property
     def members(self) -> Sequence[object]: ...
+
+
+class SyncableVoiceChannel(ManagedVoiceChannel, Protocol):
+    @property
+    def category_id(self) -> int | None: ...
+
+    # Only ever compared for equality, never indexed, so the exact mapping
+    # type does not matter here and pinning it would fight Mapping's
+    # invariant key type against discord.py's concrete dict.
+    @property
+    def overwrites(self) -> object: ...
+
+    @property
+    def bitrate(self) -> int: ...
+
+    @property
+    def user_limit(self) -> int: ...
+
+    @property
+    def rtc_region(self) -> str | None: ...
+
+    @property
+    def video_quality_mode(self) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -40,10 +74,10 @@ def channel_is_occupied(channel: ManagedVoiceChannel) -> bool:
     return len(channel.members) > 0
 
 
-def canonical_managed_channels(
-    channels: Iterable[ManagedVoiceChannel], spec: ChannelPoolSpec
-) -> dict[int, ManagedVoiceChannel]:
-    managed: dict[int, ManagedVoiceChannel] = {}
+def canonical_managed_channels[ChannelT: ManagedVoiceChannel](
+    channels: Iterable[ChannelT], spec: ChannelPoolSpec
+) -> dict[int, ChannelT]:
+    managed: dict[int, ChannelT] = {}
     for channel in channels:
         number = parse_channel_number(channel.name, spec)
         if number is None:
@@ -146,10 +180,10 @@ def refresh_empty_timers(
         empty_since_by_channel_id.pop(channel_id, None)
 
 
-def base_channel(
-    channels: Iterable[ManagedVoiceChannel], spec: ChannelPoolSpec
-) -> ManagedVoiceChannel | None:
-    managed: dict[int, ManagedVoiceChannel] = {}
+def base_channel[ChannelT: ManagedVoiceChannel](
+    channels: Iterable[ChannelT], spec: ChannelPoolSpec
+) -> ChannelT | None:
+    managed: dict[int, ChannelT] = {}
     for channel in channels:
         number = parse_channel_number(channel.name, spec)
         if number is not None and number not in managed:
@@ -159,3 +193,24 @@ def base_channel(
         (channel for _, channel in sorted(managed.items())),
         None,
     )
+
+
+def settings_fingerprint(channel: SyncableVoiceChannel) -> tuple[object, ...]:
+    return tuple(getattr(channel, name) for name in SYNCED_ATTRIBUTES)
+
+
+def channels_needing_sync[ChannelT: SyncableVoiceChannel](
+    channels: Iterable[ChannelT], spec: ChannelPoolSpec
+) -> list[ChannelT]:
+    channel_list = list(channels)
+    template = base_channel(channel_list, spec)
+    if template is None:
+        return []
+
+    desired = settings_fingerprint(template)
+    managed = canonical_managed_channels(channel_list, spec)
+    return [
+        channel
+        for _, channel in sorted(managed.items())
+        if channel.id != template.id and settings_fingerprint(channel) != desired
+    ]

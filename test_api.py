@@ -4,7 +4,17 @@ import httpx
 from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
-from botchan_api.app import ConfigWrite, config_etag, valid_snowflake
+from botchan_api.app import (
+    ADMINISTRATOR,
+    BOT_PERMISSIONS,
+    MANAGE_CHANNELS,
+    MANAGE_GUILD,
+    MANAGE_ROLES,
+    ConfigWrite,
+    config_etag,
+    has_bot_permissions,
+    valid_snowflake,
+)
 from botchan_api.discord_client import (
     DiscordAPIError,
     DiscordClient,
@@ -39,6 +49,18 @@ class APIContractTests(unittest.TestCase):
 
     def test_etag_is_revision_specific(self) -> None:
         self.assertEqual(config_etag(4), '"guild-config-4"')
+
+    def test_bot_permissions_require_channels_and_roles(self) -> None:
+        self.assertTrue(has_bot_permissions(BOT_PERMISSIONS))
+        self.assertTrue(has_bot_permissions(BOT_PERMISSIONS | MANAGE_GUILD))
+        # Manage Roles is what lets the bot copy permission overwrites from a
+        # pool's base channel, so Manage Channels alone is no longer enough.
+        self.assertFalse(has_bot_permissions(MANAGE_CHANNELS))
+        self.assertFalse(has_bot_permissions(MANAGE_ROLES))
+        self.assertFalse(has_bot_permissions(0))
+
+    def test_administrator_satisfies_bot_permissions(self) -> None:
+        self.assertTrue(has_bot_permissions(ADMINISTRATOR))
 
     def test_write_requires_at_least_one_unique_valid_pool(self) -> None:
         valid = ConfigWrite.model_validate(

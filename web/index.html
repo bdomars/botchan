@@ -135,6 +135,18 @@
                         <a class="button button-primary" :href="selectedGuild.install_url">Add BotChan</a>
                     </article>
 
+                    <article
+                        v-if="selectedGuild?.needs_permissions"
+                        class="panel install-panel"
+                    >
+                        <div>
+                            <p class="eyebrow">Permissions out of date</p>
+                            <h2>Update BotChan's permissions</h2>
+                            <p>BotChan now needs Manage Roles as well as Manage Channels, so it can copy permissions from a pool's base channel to the rest of the pool. Pools keep working without it, but permission changes will not be carried across.</p>
+                        </div>
+                        <a class="button button-primary" :href="selectedGuild.install_url">Update permissions</a>
+                    </article>
+
                     <template v-if="selectedGuild?.installed">
 
                     <div class="pools-heading">
