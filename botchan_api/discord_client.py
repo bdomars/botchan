@@ -7,7 +7,6 @@ import httpx
 
 from botchan_api.settings import Settings
 
-
 DISCORD_API = "https://discord.com/api/v10"
 MAX_ERROR_BODY_LENGTH = 4096
 MAX_RATE_LIMIT_RETRIES = 2
@@ -25,9 +24,7 @@ class DiscordClient:
     async def _json(self, response: httpx.Response) -> Any:
         if response.is_error:
             body = response.text[:MAX_ERROR_BODY_LENGTH]
-            raise DiscordAPIError(
-                f"Discord returned HTTP {response.status_code}: {body}"
-            )
+            raise DiscordAPIError(f"Discord returned HTTP {response.status_code}: {body}")
         return response.json()
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
@@ -38,10 +35,10 @@ class DiscordClient:
 
             try:
                 retry_after = float(response.json()["retry_after"])
-            except (KeyError, TypeError, ValueError):
+            except KeyError, TypeError, ValueError:
                 try:
                     retry_after = float(response.headers["Retry-After"])
-                except (KeyError, ValueError):
+                except KeyError, ValueError:
                     return response
             await asyncio.sleep(max(0.0, retry_after))
 
@@ -78,14 +75,11 @@ class DiscordClient:
         )
         if response.is_error:
             body = response.text[:MAX_ERROR_BODY_LENGTH]
-            raise DiscordAPIError(
-                f"Discord returned HTTP {response.status_code}: {body}"
-            )
+            raise DiscordAPIError(f"Discord returned HTTP {response.status_code}: {body}")
 
     async def current_user(self, access_token: str) -> dict[str, Any]:
         response = await self._request(
-            "GET",
-            f"{DISCORD_API}/users/@me", headers={"Authorization": f"Bearer {access_token}"}
+            "GET", f"{DISCORD_API}/users/@me", headers={"Authorization": f"Bearer {access_token}"}
         )
         return await self._json(response)
 
@@ -116,7 +110,7 @@ class DiscordClient:
             for guild in page:
                 try:
                     permissions = int(guild.get("permissions", 0))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     permissions = 0
                 result[str(guild["id"])] = permissions
             if len(page) < 200:

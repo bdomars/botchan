@@ -71,8 +71,7 @@ class DatabaseConfigTests(unittest.TestCase):
                 "postgresql+asyncpg://user:secret@db.example/botchan"
                 "?ssl=require&application_name=botchan"
             ),
-            "postgresql://user:secret@db.example/botchan"
-            "?application_name=botchan&sslmode=require",
+            "postgresql://user:secret@db.example/botchan?application_name=botchan&sslmode=require",
         )
 
     def test_drops_sqlalchemy_only_params(self) -> None:
@@ -132,9 +131,7 @@ class DatabaseConfigTests(unittest.TestCase):
 
     def test_rejects_malformed_notification(self) -> None:
         with self.assertRaises(ValueError):
-            PostgresConfigSource._parse_notification(
-                '{"guild_id":"123","revision":false}'
-            )
+            PostgresConfigSource._parse_notification('{"guild_id":"123","revision":false}')
 
 
 class ListenerRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -197,9 +194,7 @@ class ListenerRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertLogs("botchan.config", "ERROR"),
         ):
             source._task = asyncio.create_task(source._monitor())
-            source._notifications.put_nowait(
-                json.dumps({"guild_id": GUILD_ID, "revision": 1})
-            )
+            source._notifications.put_nowait(json.dumps({"guild_id": GUILD_ID, "revision": 1}))
             await asyncio.wait_for(reloaded.wait(), timeout=1)
 
         self.assertTrue(failing.closed)

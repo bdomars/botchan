@@ -26,7 +26,7 @@ class Security:
     def verify_oauth_state(self, signed: str, returned: str) -> bool:
         try:
             expected = self._signer.loads(signed, max_age=600)
-        except (BadSignature, SignatureExpired):
+        except BadSignature, SignatureExpired:
             return False
         return secrets.compare_digest(expected, returned)
 
@@ -38,4 +38,3 @@ class Security:
             return self._cipher.decrypt(value.encode()).decode()
         except InvalidToken as exc:
             raise RuntimeError("Stored Discord credential cannot be decrypted") from exc
-

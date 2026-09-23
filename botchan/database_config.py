@@ -57,17 +57,13 @@ def asyncpg_dsn(database_url: str) -> str:
     if url.drivername not in {"postgresql", "postgresql+asyncpg"}:
         raise RuntimeError("DATABASE_URL must use PostgreSQL")
     query = {
-        key: value
-        for key, value in url.query.items()
-        if key not in SQLALCHEMY_ONLY_QUERY_PARAMS
+        key: value for key, value in url.query.items() if key not in SQLALCHEMY_ONLY_QUERY_PARAMS
     }
     # SQLAlchemy passes ?ssl= to asyncpg.connect(ssl=...), but asyncpg's DSN
     # parser only understands the libpq name, sslmode.
     if "ssl" in query:
         query["sslmode"] = query.pop("ssl")
-    return url.set(drivername="postgresql", query=query).render_as_string(
-        hide_password=False
-    )
+    return url.set(drivername="postgresql", query=query).render_as_string(hide_password=False)
 
 
 def parse_config_row(row: Any) -> VersionedGuildConfig:
@@ -84,7 +80,8 @@ def parse_config_row(row: Any) -> VersionedGuildConfig:
     if isinstance(document, str):
         document = json.loads(document)
     if not isinstance(document, dict):
-        raise ValueError("document must be an object")
+        # Every parse_config_row failure is a ValueError; keep that contract uniform.
+        raise ValueError("document must be an object")  # noqa: TRY004
     if str(document.get("guild_id")) != raw_guild_id:
         raise ValueError("document guild_id does not match its row")
     config = GuildConfig.model_validate(
@@ -123,9 +120,7 @@ class PostgresConfigSource:
         except BaseException:
             await self._close_connection()
             raise
-        self._task = asyncio.create_task(
-            self._monitor(), name="botchan-postgres-config-listener"
-        )
+        self._task = asyncio.create_task(self._monitor(), name="botchan-postgres-config-listener")
 
     async def close(self) -> None:
         self._closing = True
@@ -176,10 +171,7 @@ class PostgresConfigSource:
                 guild_id, notified_revision = self._parse_notification(payload)
                 connection = self._require_connection()
                 change = await self._load_guild(connection, guild_id)
-                if (
-                    change.config is not None
-                    and change.config.revision < notified_revision
-                ):
+                if change.config is not None and change.config.revision < notified_revision:
                     raise RuntimeError(
                         f"guild {guild_id} is at revision {change.config.revision}, "
                         f"before notified revision {notified_revision}"
@@ -234,13 +226,11 @@ class PostgresConfigSource:
                 log.error("Ignoring invalid configuration row %r: %s", row["guild_id"], exc)
                 try:
                     invalid_guild_ids.add(int(row["guild_id"]))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     pass
         return ConfigSnapshot(guilds=guilds, invalid_guild_ids=invalid_guild_ids)
 
-    async def _load_guild(
-        self, connection: asyncpg.Connection, guild_id: int
-    ) -> GuildConfigChange:
+    async def _load_guild(self, connection: asyncpg.Connection, guild_id: int) -> GuildConfigChange:
         row = await connection.fetchrow(
             "SELECT guild_id, document, revision FROM guild_configs WHERE guild_id = $1",
             str(guild_id),

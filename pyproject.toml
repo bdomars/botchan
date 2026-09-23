@@ -22,5 +22,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "ruff>=0.16",
     "ty>=0.0.1a20",
 ]
+
+[tool.ruff]
+line-length = 100

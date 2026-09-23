@@ -206,7 +206,9 @@ def create_app(
         try:
             guilds = await discord.user_guilds(await access_token(oauth_session, db))
         except DiscordAPIError as exc:
-            raise error(503, "DISCORD_UNAVAILABLE", "Discord could not verify guild access.") from exc
+            raise error(
+                503, "DISCORD_UNAVAILABLE", "Discord could not verify guild access."
+            ) from exc
         oauth_session.guild_cache = guilds
         oauth_session.guild_cache_at = now()
         await db.commit()
@@ -240,10 +242,14 @@ def create_app(
             try:
                 installed = guild_id in await bot_guilds()
             except DiscordAPIError as exc:
-                log.exception("Discord bot installation check failed: %s", exc)
-                raise error(503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked.") from exc
+                log.exception("Discord bot installation check failed")
+                raise error(
+                    503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked."
+                ) from exc
             if not installed:
-                raise error(409, "BOT_NOT_INSTALLED", "Install BotChan before configuring this guild.")
+                raise error(
+                    409, "BOT_NOT_INSTALLED", "Install BotChan before configuring this guild."
+                )
         return guild
 
     def check_csrf(request: Request, oauth_session: OAuthSession) -> None:
@@ -283,14 +289,19 @@ def create_app(
         error_name: Annotated[str, Query(alias="error")] = "",
     ) -> RedirectResponse:
         signed_state = request.cookies.get(OAUTH_STATE_COOKIE, "")
-        if error_name or not code or not state or not security.verify_oauth_state(signed_state, state):
+        if (
+            error_name
+            or not code
+            or not state
+            or not security.verify_oauth_state(signed_state, state)
+        ):
             response = RedirectResponse("/?auth_error=oauth_failed", status_code=303)
             response.delete_cookie(OAUTH_STATE_COOKIE)
             return response
         try:
             token = await discord.exchange_code(code)
             user = await discord.current_user(token["access_token"])
-        except (DiscordAPIError, KeyError):
+        except DiscordAPIError, KeyError:
             response = RedirectResponse("/?auth_error=discord_unavailable", status_code=303)
             response.delete_cookie(OAUTH_STATE_COOKIE)
             return response
@@ -367,8 +378,10 @@ def create_app(
         try:
             bot_permissions = await bot_guilds()
         except DiscordAPIError as exc:
-            log.exception("Discord bot installation check failed: %s", exc)
-            raise error(503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked.") from exc
+            log.exception("Discord bot installation check failed")
+            raise error(
+                503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked."
+            ) from exc
         ids = [str(guild["id"]) for guild in guilds]
         revisions = {
             row.guild_id: row.revision
@@ -414,9 +427,7 @@ def create_app(
 
     @app.get("/api/guilds/{guild_id}/config")
     async def get_config(guild_id: str, db: DB, oauth_session: AuthSession) -> JSONResponse:
-        await authorized_guild(
-            guild_id, oauth_session, db, force=False, require_installed=False
-        )
+        await authorized_guild(guild_id, oauth_session, db, force=False, require_installed=False)
         row = await db.get(GuildConfigRow, guild_id)
         if row is None:
             return JSONResponse(
@@ -444,7 +455,7 @@ def create_app(
         if_none_match: Annotated[str | None, Header()] = None,
     ) -> JSONResponse:
         check_csrf(request, oauth_session)
-        guild = await authorized_guild(guild_id, oauth_session, db, force=True)
+        await authorized_guild(guild_id, oauth_session, db, force=True)
         validated = GuildConfig.model_validate(
             {"guild_id": int(guild_id), "channel_pools": body.model_dump()["channel_pools"]}
         )

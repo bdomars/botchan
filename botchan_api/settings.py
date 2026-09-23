@@ -38,4 +38,3 @@ class Settings:
             secure_cookies=os.environ.get("SECURE_COOKIES", "true").lower()
             not in {"0", "false", "no"},
         )
-

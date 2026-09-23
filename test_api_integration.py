@@ -5,7 +5,6 @@ from datetime import timedelta
 
 from cryptography.fernet import Fernet
 
-
 TEST_DATABASE_URL = os.environ.get("BOTCHAN_TEST_DATABASE_URL")
 
 
@@ -188,9 +187,7 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payloads, ['{"guild_id":"123456789012345678","revision":1}'])
         await asyncio.wait_for(config_changed.wait(), timeout=2)
         self.assertEqual(config_changes[0].config.revision, 1)
-        self.assertEqual(
-            config_changes[0].config.spec.channel_pools[0].base_name, "Other Games"
-        )
+        self.assertEqual(config_changes[0].config.spec.channel_pools[0].base_name, "Other Games")
 
         loaded = await self.client.get("/api/guilds/123456789012345678/config")
         self.assertEqual(loaded.status_code, 200)

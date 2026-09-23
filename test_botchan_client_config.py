@@ -59,9 +59,7 @@ class BotConfigRefreshTests(unittest.IsolatedAsyncioTestCase):
         await bot._apply_config_change(
             GuildConfigChange(guild_id=111, config=versioned(111, 3, maximum=5))
         )
-        self.assertIs(
-            bot.managed_guilds[111].pools[0].empty_since_by_channel_id, timers
-        )
+        self.assertIs(bot.managed_guilds[111].pools[0].empty_since_by_channel_id, timers)
         self.assertEqual(bot.managed_guilds[111].pools[0].spec.max_channels, 5)
 
         await bot._apply_config_change(
@@ -75,12 +73,8 @@ class BotConfigRefreshTests(unittest.IsolatedAsyncioTestCase):
             ConfigSnapshot(guilds={111: versioned(111, 1)}, invalid_guild_ids=set())
         )
 
-        await bot._apply_config_snapshot(
-            ConfigSnapshot(guilds={}, invalid_guild_ids={111})
-        )
-        await bot._apply_config_change(
-            GuildConfigChange(guild_id=111, config=None, invalid=True)
-        )
+        await bot._apply_config_snapshot(ConfigSnapshot(guilds={}, invalid_guild_ids={111}))
+        await bot._apply_config_change(GuildConfigChange(guild_id=111, config=None, invalid=True))
 
         self.assertEqual(set(bot.managed_guilds), {111})
 
@@ -112,9 +106,7 @@ class BotConfigRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(bot.cleanup_empty_channels, "start"),
-            patch.object(
-                asyncio.get_running_loop(), "add_signal_handler"
-            ) as add_signal_handler,
+            patch.object(asyncio.get_running_loop(), "add_signal_handler") as add_signal_handler,
         ):
             await bot.setup_hook()
 
@@ -220,9 +212,7 @@ class GuildLockTests(unittest.IsolatedAsyncioTestCase):
         async def cleanup(managed_guild: Any) -> None:
             cleaned.append(managed_guild.guild_id)
             if managed_guild.guild_id == 111:
-                await bot._apply_config_change(
-                    GuildConfigChange(guild_id=222, config=None)
-                )
+                await bot._apply_config_change(GuildConfigChange(guild_id=222, config=None))
 
         with patch.object(bot, "_cleanup_guild_unlocked", new=cleanup):
             await bot.cleanup_empty_channels()

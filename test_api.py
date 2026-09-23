@@ -16,10 +16,10 @@ from botchan_api.app import (
     valid_snowflake,
 )
 from botchan_api.discord_client import (
-    DiscordAPIError,
-    DiscordClient,
     MAX_ERROR_BODY_LENGTH,
     MAX_RATE_LIMIT_RETRIES,
+    DiscordAPIError,
+    DiscordClient,
 )
 from botchan_api.security import Security
 

@@ -228,12 +228,8 @@ class ManagedPoolTests(unittest.TestCase):
             FakeChannel(201, "Raid Rooms", []),
         ]
 
-        refresh_empty_timers(
-            channels, games_pool.empty_since_by_channel_id, 10.0, games_pool.spec
-        )
-        refresh_empty_timers(
-            channels, raid_pool.empty_since_by_channel_id, 20.0, raid_pool.spec
-        )
+        refresh_empty_timers(channels, games_pool.empty_since_by_channel_id, 10.0, games_pool.spec)
+        refresh_empty_timers(channels, raid_pool.empty_since_by_channel_id, 20.0, raid_pool.spec)
 
         self.assertEqual(games_pool.empty_since_by_channel_id, {101: 10.0})
         self.assertEqual(raid_pool.empty_since_by_channel_id, {201: 20.0})

@@ -51,4 +51,3 @@ class GuildConfigVersion(Base):
     editor_discord_user_id: Mapped[str] = mapped_column(String(20), index=True)
     editor_name: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-

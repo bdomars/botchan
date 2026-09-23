@@ -102,9 +102,7 @@ def duplicate_extra_numbers(
     return duplicates
 
 
-def desired_channel_count(
-    channels: Iterable[ManagedVoiceChannel], spec: ChannelPoolSpec
-) -> int:
+def desired_channel_count(channels: Iterable[ManagedVoiceChannel], spec: ChannelPoolSpec) -> int:
     occupied_count = sum(1 for channel in channels if channel_is_occupied(channel))
     return min(max(occupied_count + 1, spec.min_channels), spec.max_channels)
 
@@ -133,9 +131,7 @@ def plan_reconcile(
         while len(missing_numbers) < desired_count - current_count:
             missing_numbers.append(next_number)
             next_number += 1
-        return ReconcilePlan(
-            create_numbers=missing_numbers[: desired_count - current_count]
-        )
+        return ReconcilePlan(create_numbers=missing_numbers[: desired_count - current_count])
 
     if current_count <= desired_count:
         return ReconcilePlan()

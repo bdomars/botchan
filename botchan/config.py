@@ -64,9 +64,7 @@ class ChannelPoolConfig(BaseModel):
     @model_validator(mode="after")
     def validate_bounds(self) -> Self:
         if self.max_channels < self.min_channels:
-            raise ValueError(
-                "max_channels must be greater than or equal to min_channels"
-            )
+            raise ValueError("max_channels must be greater than or equal to min_channels")
         return self
 
     def to_spec(self) -> ChannelPoolSpec:
@@ -118,9 +116,7 @@ def parse_runtime_config_data(data: object) -> RuntimeConfig:
     except ValidationError as exc:
         raise RuntimeError(f"Invalid config: {exc}") from exc
 
-    return RuntimeConfig(
-        guilds={guild.guild_id: guild.to_spec() for guild in config.guilds}
-    )
+    return RuntimeConfig(guilds={guild.guild_id: guild.to_spec() for guild in config.guilds})
 
 
 def load_runtime_config() -> RuntimeConfig:

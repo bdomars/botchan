@@ -78,9 +78,7 @@ class BotChan(commands.Bot):
         self.cleanup_empty_channels.start()
         # In a container the bot runs as PID 1, which ignores SIGTERM unless a
         # handler is installed, so `podman stop` would otherwise SIGKILL it.
-        asyncio.get_running_loop().add_signal_handler(
-            signal.SIGTERM, self._on_sigterm
-        )
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, self._on_sigterm)
 
     def _on_sigterm(self) -> None:
         if self._shutdown_task is None:
@@ -196,9 +194,7 @@ class BotChan(commands.Bot):
 
         for guild_id, versioned_config in snapshot.guilds.items():
             existing = self.managed_guilds.get(guild_id)
-            new_guilds[guild_id] = self._build_managed_guild(
-                versioned_config.spec, existing
-            )
+            new_guilds[guild_id] = self._build_managed_guild(versioned_config.spec, existing)
             new_revisions[guild_id] = versioned_config.revision
             if self._config_revisions.get(guild_id) != versioned_config.revision:
                 changed_guild_ids.append(guild_id)
@@ -243,13 +239,9 @@ class BotChan(commands.Bot):
             await self._reconcile_guilds([change.guild_id])
 
     @staticmethod
-    def _build_managed_guild(
-        spec: GuildSpec, existing: ManagedGuild | None
-    ) -> ManagedGuild:
+    def _build_managed_guild(spec: GuildSpec, existing: ManagedGuild | None) -> ManagedGuild:
         previous_pools = (
-            {pool.spec.base_name: pool for pool in existing.pools}
-            if existing is not None
-            else {}
+            {pool.spec.base_name: pool for pool in existing.pools} if existing is not None else {}
         )
         pools = []
         for pool_spec in spec.channel_pools:
@@ -258,9 +250,7 @@ class BotChan(commands.Bot):
                 ManagedPool(
                     spec=pool_spec,
                     empty_since_by_channel_id=(
-                        previous.empty_since_by_channel_id
-                        if previous is not None
-                        else {}
+                        previous.empty_since_by_channel_id if previous is not None else {}
                     ),
                     last_sync_by_channel_id=(
                         previous.last_sync_by_channel_id if previous is not None else {}
@@ -329,9 +319,7 @@ class BotChan(commands.Bot):
         template = base_channel(working, pool.spec)
 
         for number in plan.create_numbers:
-            new_channel = await self._create_channel(
-                guild, pool.spec, template, number, working
-            )
+            new_channel = await self._create_channel(guild, pool.spec, template, number, working)
             if new_channel is None:
                 break
             working.append(new_channel)
@@ -342,9 +330,7 @@ class BotChan(commands.Bot):
         await self._delete_channels(pool, plan.delete_channel_ids)
 
         deleted = set(plan.delete_channel_ids)
-        await self._sync_pool_settings(
-            guild, [c for c in working if c.id not in deleted], pool
-        )
+        await self._sync_pool_settings(guild, [c for c in working if c.id not in deleted], pool)
 
     @tasks.loop(seconds=CLEANUP_INTERVAL_SECONDS)
     async def cleanup_empty_channels(self) -> None:
@@ -409,9 +395,7 @@ class BotChan(commands.Bot):
                     reason=f"All {spec.base_name} voice channels are occupied",
                 )
         except discord.DiscordException:
-            log.exception(
-                "Failed to create %s in guild %s", spec.channel_name(number), guild.id
-            )
+            log.exception("Failed to create %s in guild %s", spec.channel_name(number), guild.id)
             return None
 
         await self._position_after_highest_managed(new_channel, channels, spec)
@@ -430,8 +414,7 @@ class BotChan(commands.Bot):
             return
 
         managed_ids = {
-            channel.id
-            for channel in canonical_managed_channels(channels, pool.spec).values()
+            channel.id for channel in canonical_managed_channels(channels, pool.spec).values()
         }
         for channel_id in set(pool.last_sync_by_channel_id) - managed_ids:
             pool.last_sync_by_channel_id.pop(channel_id, None)
@@ -477,27 +460,21 @@ class BotChan(commands.Bot):
                     template.name,
                 )
             except discord.DiscordException:
-                log.exception(
-                    "Failed to sync channel %s in guild %s", channel.name, guild.id
-                )
+                log.exception("Failed to sync channel %s in guild %s", channel.name, guild.id)
 
             pool.last_sync_by_channel_id[channel.id] = (
                 desired,
                 settings_fingerprint(applied),
             )
 
-    async def _delete_channels(
-        self, pool: ManagedPool, channel_ids: Iterable[int]
-    ) -> None:
+    async def _delete_channels(self, pool: ManagedPool, channel_ids: Iterable[int]) -> None:
         for channel_id in channel_ids:
             channel = self.get_channel(channel_id)
             if not isinstance(channel, discord.VoiceChannel):
                 pool.empty_since_by_channel_id.pop(channel_id, None)
                 continue
             try:
-                await channel.delete(
-                    reason="Managed voice channel exceeded desired count"
-                )
+                await channel.delete(reason="Managed voice channel exceeded desired count")
                 pool.empty_since_by_channel_id.pop(channel_id, None)
                 log.info(
                     "Deleted channel %s from guild %s pool %s",
