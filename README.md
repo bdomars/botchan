@@ -10,24 +10,25 @@ The original use case is an "Other Games" area: keep a minimum number of voice c
 
 ### Setting up a pool
 
-Add a pool in the editor and the bot takes it from there. It creates the pool's
-channels itself, with Discord's default settings and no category:
+A pool grows from a voice channel you create in Discord. Create the channel,
+put it where you want it and set it up however you like: category,
+permissions, bitrate, user limit, region, video quality. Then add a pool in
+the editor and pick that channel as its base channel.
 
-```text
-🎮│Other Games
-```
+The bot copies the base channel's settings onto every other channel in the
+pool and keeps them there, so the base channel is the only one you ever
+configure. Change it later and the rest of the pool follows within a second.
 
-Move that channel where you want it and set it up however you like — category,
-permissions, bitrate, user limit, region, video quality. The bot copies those
-settings onto every other channel in the pool and keeps them there, so the base
-channel is the only one you ever configure. There is no template to define and
-nothing to configure on BotChan's side beyond the pool itself.
+The pool takes its name from the base channel, too. Rename the base channel in
+Discord and the bot renames the rest of the pool to match.
 
-Change the base channel later and the rest of the pool follows within a second.
+If the base channel is deleted, the pool pauses: the bot stops creating,
+deleting and syncing its channels, and the editor asks you to pick a new base
+channel.
 
 ### Keeping the pool sized
 
-The bot manages voice channels whose names match a configured channel-pool base name:
+Besides the base channel, the bot manages voice channels named after it:
 
 ```text
 🎮│Other Games
@@ -60,11 +61,14 @@ Channels numbered at or below the pool's `min_channels` are protected. With `min
 
 ## Safety Rules
 
-- The bot only manages voice channels whose names exactly match the configured naming scheme.
+- The bot only manages a pool's base channel and the voice channels named exactly `<base channel name> #N`.
 - Matching channels are adopted as managed state, so restarts do not lose track of existing channels.
+- Another channel that merely has the same name as a base channel is not part of the pool.
 - Occupied channels are never deleted.
 - Channels numbered `1..min` are never deleted.
 - If duplicate managed channel numbers exist, such as two `Other Games #4` channels, the bot skips create/delete actions and logs a warning.
+- The base channel is never edited, renamed or deleted by the bot.
+- A pool whose base channel is gone is paused, not rebuilt.
 - New channels are cloned from the base channel, including category, permissions, bitrate, user limit, RTC region, and video quality mode.
 - Those settings are kept in sync afterwards: edit the base channel and the rest of the pool follows.
 - A setting the bot cannot apply is attempted once, not retried in a loop.
@@ -96,12 +100,14 @@ The stored configuration for a guild has this shape:
   "guild_id": "123456789012345678",
   "channel_pools": [
     {
+      "base_channel_id": "223456789012345678",
       "base_name": "🎮│Other Games",
       "min_channels": 3,
       "max_channels": 10,
       "idle_seconds": 300
     },
     {
+      "base_channel_id": "223456789012345679",
       "base_name": "Raid Rooms",
       "min_channels": 1,
       "max_channels": 5,
@@ -110,6 +116,11 @@ The stored configuration for a guild has this shape:
   ]
 }
 ```
+
+`base_name` is the base channel's name when the pool was last saved, and only
+serves as a label: the bot always uses the channel's current name. Pools saved
+before channels were picked have no `base_channel_id`. The bot finds their base
+channel by name, and the editor matches them to it so the next save adds the ID.
 
 Apply migrations before starting the bot locally:
 
@@ -212,10 +223,18 @@ node --test web/test_config_core.js
 ## Important Limitations
 
 - The bot only manages guilds with a configuration stored in PostgreSQL.
-- The naming scheme is deterministic: base channel name for channel 1, then `#N` suffixes for channels 2 and up.
-- Channel matching is by name across the whole guild, so an unrelated voice channel that happens to match a pool's naming scheme is adopted into that pool.
-- Renaming a channel in Discord removes it from its pool rather than renaming the pool. The channel is left alone from then on, and the bot creates a replacement to restore the pool's minimum. Rename the pool in the editor instead.
+- The naming scheme is deterministic: the base channel's name for channel 1, then `#N` suffixes for channels 2 and up. The longest name, `<base> #<max>`, must fit Discord's 100 character limit, or the pool pauses.
+- Extra channels are matched by name across the whole guild, so an unrelated voice channel named like one (`<base> #N`) is adopted into that pool.
+- Renaming an extra channel in Discord removes it from its pool. The channel is left alone from then on, and the bot creates a replacement to restore the pool's minimum.
+- Extras follow a base channel rename only while the bot is running. If the base channel is renamed while the bot is offline, the old extras keep their names and are no longer part of the pool.
+- Discord allows two renames of a channel per ten minutes. If the base channel is renamed more often than that, the extras catch up once the limit allows, and the pool waits for them in the meantime.
 - Channel order inside a category is left to Discord after the base channel moves; only newly created channels are positioned explicitly.
+
+## Upgrading
+
+The bot must be upgraded before the API. An older bot does not know about
+`base_channel_id`, so it ignores configurations saved by the newer editor and
+keeps running on the ones it loaded before.
 
 ## License
 

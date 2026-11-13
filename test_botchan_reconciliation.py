@@ -10,6 +10,8 @@ from botchan.reconciliation import (
     desired_channel_count,
     parse_channel_number,
     plan_reconcile,
+    pool_members,
+    pool_name_problems,
     refresh_empty_timers,
     settings_fingerprint,
 )
@@ -343,6 +345,45 @@ class SeedingTests(unittest.TestCase):
 
         self.assertEqual(plan.create_numbers, [1, 2, 3])
         self.assertIsNone(plan.blocked_reason)
+
+
+def spec_named(name: str, *, maximum: int = 10) -> ChannelPoolSpec:
+    return ChannelPoolSpec(base_name=name, min_channels=1, max_channels=maximum, idle_seconds=0)
+
+
+class PoolIdentityTests(unittest.TestCase):
+    def test_pool_members_ignore_namesakes_of_the_base_channel(self) -> None:
+        base = FakeChannel(1, "Other Games")
+        channels = [
+            base,
+            FakeChannel(2, "Other Games"),
+            FakeChannel(3, "Other Games #2"),
+            FakeChannel(4, "General"),
+        ]
+
+        members = pool_members(channels, base, SPEC)
+
+        self.assertEqual([channel.id for channel in members], [1, 3])
+
+    def test_compatible_pools_have_no_problems(self) -> None:
+        self.assertEqual(pool_name_problems([spec_named("Other Games"), spec_named("Raids")]), [])
+
+    def test_a_base_named_like_another_pools_extra_is_a_problem(self) -> None:
+        problems = pool_name_problems([spec_named("Games"), spec_named("Games #2")])
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("extra channel of the 'Games' pool", problems[0])
+
+    def test_two_bases_with_the_same_name_are_reported_once(self) -> None:
+        problems = pool_name_problems([spec_named("Games"), spec_named("Games")])
+
+        self.assertEqual(len(problems), 1)
+
+    def test_names_longer_than_discord_allows_are_a_problem(self) -> None:
+        # " #10" adds four characters; the emoji counts as one.
+        name = "🎮" + "x" * 96
+        self.assertEqual(pool_name_problems([spec_named(name, maximum=9)]), [])
+        self.assertEqual(len(pool_name_problems([spec_named(name, maximum=10)])), 1)
 
 
 if __name__ == "__main__":

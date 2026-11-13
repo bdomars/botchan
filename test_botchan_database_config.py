@@ -111,6 +111,41 @@ class DatabaseConfigTests(unittest.TestCase):
         self.assertEqual(config.spec.channel_pools[0].max_channels, 8)
         self.assertEqual(config.revision, 4)
 
+    def test_parses_a_pool_anchored_to_a_channel(self) -> None:
+        pool = {
+            "base_name": "Other Games",
+            "base_channel_id": "223456789012345678",
+            "min_channels": 2,
+            "max_channels": 8,
+            "idle_seconds": 300,
+        }
+        config = parse_config_row(
+            {
+                "guild_id": "123456789012345678",
+                "revision": 1,
+                "document": {"guild_id": "123456789012345678", "channel_pools": [pool]},
+            }
+        )
+
+        self.assertEqual(config.spec.channel_pools[0].base_channel_id, 223456789012345678)
+
+    def test_rejects_two_pools_on_one_base_channel(self) -> None:
+        pool = {"base_channel_id": "223456789012345678"}
+        with self.assertRaises(ValueError):
+            parse_config_row(
+                {
+                    "guild_id": "123456789012345678",
+                    "revision": 1,
+                    "document": {
+                        "guild_id": "123456789012345678",
+                        "channel_pools": [
+                            {**pool, "base_name": "Other Games"},
+                            {**pool, "base_name": "Raid Rooms"},
+                        ],
+                    },
+                }
+            )
+
     def test_rejects_invalid_database_document(self) -> None:
         with self.assertRaises(ValidationError):
             parse_config_row(

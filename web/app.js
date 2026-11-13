@@ -31,6 +31,10 @@
                 authLoading: true,
                 guildLoading: false,
                 guildOptions: [],
+                // The selected guild's voice channels; null until loaded.
+                channels: null,
+                channelsLoading: false,
+                channelsError: "",
                 draft: addClientIds(core.defaultDraft()),
                 loadedDraft: null,
                 configEtag: null,
@@ -44,7 +48,10 @@
 
         computed: {
             validation() {
-                return core.validateDraft(this.draft);
+                return core.validateDraft(this.draft, this.channels);
+            },
+            channelGroups() {
+                return core.groupChannels(this.channels);
             },
             selectedGuild() {
                 return this.guildOptions.find((guild) => guild.id === this.draft.guild_id) || null;
@@ -112,6 +119,8 @@
                 const guild = this.guildOptions.find((item) => item.id === guildId);
                 this.saveError = "";
                 this.pageError = "";
+                this.channels = null;
+                this.channelsError = "";
                 if (!guild || !guild.installed) {
                     this.setLoadedDraft({ guild_id: guildId, channel_pools: [] }, null);
                     return;
@@ -128,8 +137,34 @@
                 } catch (error) {
                     this.pageError = error.message;
                     this.setLoadedDraft({ guild_id: guildId, channel_pools: [] }, null);
+                    return;
                 } finally {
                     this.guildLoading = false;
+                }
+                await this.loadChannels();
+            },
+
+            async loadChannels() {
+                const guildId = this.draft.guild_id;
+                this.channelsLoading = true;
+                this.channelsError = "";
+                try {
+                    const response = await fetch(`/api/guilds/${encodeURIComponent(guildId)}/channels`, {
+                        headers: { Accept: "application/json" },
+                    });
+                    const body = await this.responseBody(response);
+                    if (!response.ok) throw new Error(body.message || "Could not load the server's channels.");
+                    // The admin may have switched guilds while this loaded.
+                    if (guildId !== this.draft.guild_id) return;
+                    this.channels = body.channels;
+                    const adopted = core.adoptPoolsByName(this.draft, this.channels);
+                    if (adopted > 0) {
+                        this.notify("Matched existing pools to their channels. Save to keep it.");
+                    }
+                } catch (error) {
+                    if (guildId === this.draft.guild_id) this.channelsError = error.message;
+                } finally {
+                    this.channelsLoading = false;
                 }
             },
 
@@ -141,20 +176,36 @@
 
             addPool() {
                 const pool = core.poolToDraft(core.POOL_DEFAULTS);
-                pool.base_name = this.uniqueDefaultName();
                 this.draft.channel_pools.push(Object.assign({ client_id: nextPoolId++ }, pool));
                 this.$nextTick(function () {
                     const cards = document.querySelectorAll(".pool-card");
-                    cards[cards.length - 1]?.querySelector("input")?.focus();
+                    cards[cards.length - 1]?.querySelector("select")?.focus();
                 });
             },
 
-            uniqueDefaultName() {
-                const names = new Set(this.draft.channel_pools.map((pool) => String(pool.base_name).trim()));
-                if (!names.has("Other Games")) return "Other Games";
-                let suffix = 2;
-                while (names.has("Channel Pool " + suffix)) suffix += 1;
-                return "Channel Pool " + suffix;
+            poolName(pool) {
+                return core.poolBaseName(pool, this.channels);
+            },
+
+            poolBaseMissing(pool) {
+                return Boolean(
+                    this.channels &&
+                    pool.base_channel_id &&
+                    !this.channels.some((channel) => channel.id === pool.base_channel_id),
+                );
+            },
+
+            channelLabel(channel, poolIndex) {
+                const reason = core.channelUnavailableReason(
+                    channel, this.draft.channel_pools, poolIndex, this.channels,
+                );
+                return reason ? `${channel.name} (${reason})` : channel.name;
+            },
+
+            channelUnavailable(channel, poolIndex) {
+                return Boolean(
+                    core.channelUnavailableReason(channel, this.draft.channel_pools, poolIndex, this.channels),
+                );
             },
 
             removePool(index) {
@@ -177,7 +228,7 @@
             },
 
             exampleChannels(pool) {
-                const baseName = String(pool.base_name || "").trim() || "Channel";
+                const baseName = this.poolName(pool) || "Channel";
                 const minimum = Number(pool.min_channels);
                 const maximum = Number(pool.max_channels);
                 const validMin = Number.isSafeInteger(minimum) && minimum > 0;

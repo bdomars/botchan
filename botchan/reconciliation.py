@@ -4,7 +4,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from botchan.config import ChannelPoolSpec
+from botchan.config import MAX_CHANNEL_NAME_LENGTH, ChannelPoolSpec
 
 # Channel settings propagated from a pool's base channel to the rest of the
 # pool. Kept in one place so the diff and the Discord edit cannot drift apart.
@@ -210,3 +210,50 @@ def channels_needing_sync[ChannelT: SyncableVoiceChannel](
         for _, channel in sorted(managed.items())
         if channel.id != template.id and settings_fingerprint(channel) != desired
     ]
+
+
+def pool_members[ChannelT: ManagedVoiceChannel](
+    channels: Iterable[ChannelT], base: ChannelT, spec: ChannelPoolSpec
+) -> list[ChannelT]:
+    """The base channel and the extras named after it.
+
+    Another channel that merely shares the base channel's name is not part of
+    the pool: the base is known by ID, so the name is no longer ambiguous.
+    """
+    return [base] + [
+        channel
+        for channel in channels
+        if channel.id != base.id and (parse_channel_number(channel.name, spec) or 0) > 1
+    ]
+
+
+def longest_name_too_long(spec: ChannelPoolSpec) -> bool:
+    return len(spec.channel_name(spec.max_channels)) > MAX_CHANNEL_NAME_LENGTH
+
+
+def pool_name_problems(specs: Sequence[ChannelPoolSpec]) -> list[str]:
+    """Reasons a guild's pools, named after their base channels, cannot coexist."""
+    problems: list[str] = []
+    for spec in specs:
+        if longest_name_too_long(spec):
+            problems.append(
+                f"{spec.channel_name(spec.max_channels)!r} would be longer than Discord's "
+                f"{MAX_CHANNEL_NAME_LENGTH} character limit. Shorten the base channel's "
+                "name or lower the maximum."
+            )
+    for index, spec in enumerate(specs):
+        for other_index, other in enumerate(specs):
+            if index == other_index:
+                continue
+            if spec.base_name == other.base_name:
+                if index < other_index:
+                    problems.append(
+                        f"Two pools use base channels named {spec.base_name!r}. "
+                        "Rename one of them in Discord."
+                    )
+            elif parse_channel_number(spec.base_name, other) is not None:
+                problems.append(
+                    f"{spec.base_name!r} looks like an extra channel of the "
+                    f"{other.base_name!r} pool. Rename it in Discord or pick another channel."
+                )
+    return problems

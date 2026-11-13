@@ -30,6 +30,12 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         # result for 30 seconds, so later mutations within a test are ignored.
         self.bot_permissions = {"123456789012345678": BOT_PERMISSIONS}
         bot_permissions = self.bot_permissions
+        self.guild_channels = [
+            {"id": "223456789012345678", "type": 2, "name": "Other Games", "position": 0},
+            {"id": "223456789012345679", "type": 2, "name": "Other Games #2", "position": 1},
+            {"id": "223456789012345680", "type": 0, "name": "general", "position": 2},
+        ]
+        guild_channels = self.guild_channels
         self.required_bits = BOT_PERMISSIONS
         self.manage_channels_bit = MANAGE_CHANNELS
         self.administrator_bit = ADMINISTRATOR
@@ -50,6 +56,9 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             async def bot_guilds(_self):
                 discord_calls["bot_guilds"] += 1
                 return dict(bot_permissions)
+
+            async def guild_channels(_self, _guild_id):
+                return [dict(channel) for channel in guild_channels]
 
             async def refresh(_self, _refresh_token):
                 raise AssertionError("token should not need refresh")
@@ -168,7 +177,7 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         body = {
             "channel_pools": [
                 {
-                    "base_name": "Other Games",
+                    "base_channel_id": "223456789012345678",
                     "min_channels": 3,
                     "max_channels": 10,
                     "idle_seconds": 600,
@@ -187,11 +196,17 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payloads, ['{"guild_id":"123456789012345678","revision":1}'])
         await asyncio.wait_for(config_changed.wait(), timeout=2)
         self.assertEqual(config_changes[0].config.revision, 1)
-        self.assertEqual(config_changes[0].config.spec.channel_pools[0].base_name, "Other Games")
+        saved_pool = config_changes[0].config.spec.channel_pools[0]
+        self.assertEqual(saved_pool.base_channel_id, 223456789012345678)
+        # The name comes from Discord, not from the request.
+        self.assertEqual(saved_pool.base_name, "Other Games")
 
         loaded = await self.client.get("/api/guilds/123456789012345678/config")
         self.assertEqual(loaded.status_code, 200)
-        self.assertEqual(loaded.json()["channel_pools"], body["channel_pools"])
+        self.assertEqual(
+            loaded.json()["channel_pools"],
+            [{**body["channel_pools"][0], "base_name": "Other Games"}],
+        )
 
         stale = await self.client.put(
             "/api/guilds/123456789012345678/config",
@@ -204,3 +219,37 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             version_count = await db.scalar(select(func.count()).select_from(GuildConfigVersion))
         self.assertEqual(version_count, 1)
         await connection.close()
+
+    async def put(self, *base_channel_ids: str):
+        return await self.client.put(
+            "/api/guilds/123456789012345678/config",
+            json={
+                "channel_pools": [
+                    {"base_channel_id": channel_id, "min_channels": 1, "max_channels": 10}
+                    for channel_id in base_channel_ids
+                ]
+            },
+            headers={"X-CSRF-Token": "csrf-token", "If-None-Match": "*"},
+        )
+
+    async def test_channel_list_offers_voice_channels_only(self) -> None:
+        response = await self.client.get("/api/guilds/123456789012345678/channels")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [channel["name"] for channel in response.json()["channels"]],
+            ["Other Games", "Other Games #2"],
+        )
+
+    async def test_a_base_channel_must_be_a_voice_channel_in_the_guild(self) -> None:
+        text_channel = await self.put("223456789012345680")
+        unknown = await self.put("323456789012345678")
+
+        self.assertEqual(text_channel.status_code, 422)
+        self.assertEqual(unknown.json()["code"], "BASE_CHANNEL_NOT_FOUND")
+
+    async def test_a_base_channel_cannot_be_another_pools_extra(self) -> None:
+        response = await self.put("223456789012345678", "223456789012345679")
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["code"], "POOL_NAMES_CONFLICT")

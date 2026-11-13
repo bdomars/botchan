@@ -17,6 +17,12 @@ from pydantic import (
 )
 
 DEFAULT_RUNTIME_CONFIG_PATH = "botchan.config.json"
+# Discord rejects longer channel names.
+MAX_CHANNEL_NAME_LENGTH = 100
+
+
+def is_snowflake(value: str) -> bool:
+    return value.isdigit() and value[0] != "0" and len(value) <= 20
 
 
 @dataclass(frozen=True)
@@ -32,10 +38,15 @@ class GuildSpec:
 
 @dataclass(frozen=True)
 class ChannelPoolSpec:
+    # For a pool anchored to a channel this is the name the editor last saw;
+    # the bot uses the base channel's live name instead.
     base_name: str
     min_channels: int
     max_channels: int
     idle_seconds: int
+    # None for pools saved before the editor picked channels: those find
+    # their base channel by name.
+    base_channel_id: int | None = None
 
     @property
     def channel_re(self) -> re.Pattern[str]:
@@ -49,6 +60,7 @@ class ChannelPoolConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     base_name: str = "Other Games"
+    base_channel_id: str | None = None
     min_channels: int = Field(default=3, ge=1)
     max_channels: int = Field(default=10, ge=1)
     idle_seconds: int = Field(default=10 * 60, ge=0)
@@ -61,6 +73,13 @@ class ChannelPoolConfig(BaseModel):
             raise ValueError("must not be empty")
         return stripped
 
+    @field_validator("base_channel_id")
+    @classmethod
+    def validate_base_channel_id(cls, value: str | None) -> str | None:
+        if value is not None and not is_snowflake(value):
+            raise ValueError("must be a Discord snowflake string")
+        return value
+
     @model_validator(mode="after")
     def validate_bounds(self) -> Self:
         if self.max_channels < self.min_channels:
@@ -68,7 +87,15 @@ class ChannelPoolConfig(BaseModel):
         return self
 
     def to_spec(self) -> ChannelPoolSpec:
-        return ChannelPoolSpec(**self.model_dump())
+        return ChannelPoolSpec(
+            base_name=self.base_name,
+            min_channels=self.min_channels,
+            max_channels=self.max_channels,
+            idle_seconds=self.idle_seconds,
+            base_channel_id=(
+                int(self.base_channel_id) if self.base_channel_id is not None else None
+            ),
+        )
 
 
 class GuildConfig(BaseModel):
@@ -86,6 +113,16 @@ class GuildConfig(BaseModel):
                     f"{pool.base_name!r} duplicates another pool in guild {self.guild_id}"
                 )
             seen.add(pool.base_name)
+        seen_ids: set[str] = set()
+        for pool in self.channel_pools:
+            if pool.base_channel_id is None:
+                continue
+            if pool.base_channel_id in seen_ids:
+                raise ValueError(
+                    f"channel {pool.base_channel_id} is the base of more than one pool "
+                    f"in guild {self.guild_id}"
+                )
+            seen_ids.add(pool.base_channel_id)
         return self
 
     def to_spec(self) -> GuildSpec:

@@ -5,12 +5,12 @@ import logging
 import signal
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import discord
 from discord.ext import commands, tasks
 
-from botchan.config import ChannelPoolSpec, GuildSpec
+from botchan.config import MAX_CHANNEL_NAME_LENGTH, ChannelPoolSpec, GuildSpec
 from botchan.database_config import (
     ConfigSnapshot,
     GuildConfigChange,
@@ -21,8 +21,10 @@ from botchan.reconciliation import (
     base_channel,
     canonical_managed_channels,
     channels_needing_sync,
+    longest_name_too_long,
     parse_channel_number,
     plan_reconcile,
+    pool_members,
     refresh_empty_timers,
     settings_fingerprint,
 )
@@ -30,6 +32,10 @@ from botchan.reconciliation import (
 log = logging.getLogger("botchan")
 
 CLEANUP_INTERVAL_SECONDS = 30
+# discord.py sleeps through rate limits by default. Channel renames are limited
+# to two per ten minutes, and sleeping through that would hold the guild lock
+# for minutes, so longer waits raise instead and the next pass retries.
+MAX_RATE_LIMIT_WAIT_SECONDS = 30
 
 # (settings requested, settings the channel had once the edit returned)
 type SyncRecord = tuple[tuple[object, ...], tuple[object, ...]]
@@ -46,6 +52,13 @@ class ManagedPool:
     # Comparing the observed half too means a channel an admin has since
     # changed is still resynced, because it no longer looks the way we left it.
     last_sync_by_channel_id: dict[int, SyncRecord] = field(default_factory=dict)
+    # The base channel's name as of the last pass. Extras are found by name, so
+    # when the base is renamed they must follow before anything else happens.
+    last_base_name: str | None = None
+    # Extras still to be renamed after the base channel was: id -> number.
+    pending_renames: dict[int, int] = field(default_factory=dict)
+    # Why the pool is currently paused, kept to log only the transitions.
+    paused_reason: str | None = None
 
 
 @dataclass
@@ -54,13 +67,29 @@ class ManagedGuild:
     pools: list[ManagedPool]
 
 
+@dataclass(frozen=True)
+class ResolvedPool:
+    # The pool's spec named after its base channel's current name.
+    spec: ChannelPoolSpec
+    base: discord.VoiceChannel
+    channels: list[discord.VoiceChannel]
+
+
+def pool_key(spec: ChannelPoolSpec) -> int | str:
+    return spec.base_channel_id if spec.base_channel_id is not None else spec.base_name
+
+
 class BotChan(commands.Bot):
     def __init__(self, config_source: PostgresConfigSource) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True
 
-        super().__init__(command_prefix=commands.when_mentioned, intents=intents)
+        super().__init__(
+            command_prefix=commands.when_mentioned,
+            intents=intents,
+            max_ratelimit_timeout=MAX_RATE_LIMIT_WAIT_SECONDS,
+        )
         self.managed_guilds: dict[int, ManagedGuild] = {}
         self._config_revisions: dict[int, int] = {}
         self._config_source = config_source
@@ -111,12 +140,31 @@ class BotChan(commands.Bot):
         await self.reconcile_guild_id(channel.guild.id)
 
     @staticmethod
-    def _touches_a_pool(managed_guild: ManagedGuild, *names: str) -> bool:
-        return any(
-            parse_channel_number(name, pool.spec) is not None
-            for pool in managed_guild.pools
-            for name in names
-        )
+    def _naming_spec(guild: discord.Guild, spec: ChannelPoolSpec) -> ChannelPoolSpec | None:
+        """The pool's spec named after its base channel, or None if that is gone."""
+        if spec.base_channel_id is None:
+            return spec
+        base = guild.get_channel(spec.base_channel_id)
+        if not isinstance(base, discord.VoiceChannel):
+            return None
+        return replace(spec, base_name=base.name)
+
+    def _touches_a_pool(
+        self,
+        guild: discord.Guild,
+        managed_guild: ManagedGuild,
+        channel_id: int,
+        *names: str,
+    ) -> bool:
+        for pool in managed_guild.pools:
+            if channel_id == pool.spec.base_channel_id:
+                return True
+            spec = self._naming_spec(guild, pool.spec)
+            if spec is not None and any(
+                parse_channel_number(name, spec) is not None for name in names
+            ):
+                return True
+        return False
 
     async def on_guild_channel_update(
         self,
@@ -134,7 +182,7 @@ class BotChan(commands.Bot):
         # Both names matter: a rename can carry a channel into a pool or out of
         # one, and leaving drops the pool below its minimum just as surely as a
         # deletion would.
-        if not self._touches_a_pool(managed_guild, was, after.name):
+        if not self._touches_a_pool(after.guild, managed_guild, after.id, was, after.name):
             return
 
         # A rename alone is a change even when no synced setting moved.
@@ -153,11 +201,12 @@ class BotChan(commands.Bot):
         managed_guild = self.managed_guilds.get(channel.guild.id)
         if managed_guild is None:
             return
-        if not self._touches_a_pool(managed_guild, channel.name):
+        if not self._touches_a_pool(channel.guild, managed_guild, channel.id, channel.name):
             return
 
         # Our own deletions land here too. Those leave the pool at its desired
-        # count, so the pass they trigger finds nothing to do.
+        # count, so the pass they trigger finds nothing to do. Deleting a base
+        # channel pauses its pool.
         await self.reconcile_guild_id(channel.guild.id)
 
     def _guild_lock(self, guild_id: int) -> asyncio.Lock:
@@ -241,22 +290,15 @@ class BotChan(commands.Bot):
     @staticmethod
     def _build_managed_guild(spec: GuildSpec, existing: ManagedGuild | None) -> ManagedGuild:
         previous_pools = (
-            {pool.spec.base_name: pool for pool in existing.pools} if existing is not None else {}
+            {pool_key(pool.spec): pool for pool in existing.pools} if existing is not None else {}
         )
         pools = []
         for pool_spec in spec.channel_pools:
-            previous = previous_pools.get(pool_spec.base_name)
-            pools.append(
-                ManagedPool(
-                    spec=pool_spec,
-                    empty_since_by_channel_id=(
-                        previous.empty_since_by_channel_id if previous is not None else {}
-                    ),
-                    last_sync_by_channel_id=(
-                        previous.last_sync_by_channel_id if previous is not None else {}
-                    ),
-                )
-            )
+            previous = previous_pools.get(pool_key(pool_spec))
+            if previous is None:
+                pools.append(ManagedPool(spec=pool_spec))
+            else:
+                pools.append(replace(previous, spec=pool_spec))
         return ManagedGuild(guild_id=spec.guild_id, pools=pools)
 
     async def _reconcile_guild_unlocked(self, managed_guild: ManagedGuild) -> None:
@@ -269,33 +311,135 @@ class BotChan(commands.Bot):
         for pool in managed_guild.pools:
             await self._reconcile_pool(guild, channels, pool)
 
+    def _set_paused(self, guild: discord.Guild, pool: ManagedPool, reason: str | None) -> None:
+        if reason == pool.paused_reason:
+            return
+        if reason is not None:
+            log.warning("Pausing guild %s pool %s: %s", guild.id, pool.spec.base_name, reason)
+        else:
+            log.info("Resuming guild %s pool %s", guild.id, pool.spec.base_name)
+        pool.paused_reason = reason
+
+    def _resolve_pool(
+        self,
+        guild: discord.Guild,
+        channels: list[discord.VoiceChannel],
+        pool: ManagedPool,
+    ) -> ResolvedPool | None:
+        """Find the pool's base channel and members, or pause the pool."""
+        spec = pool.spec
+        if spec.base_channel_id is not None:
+            found = guild.get_channel(spec.base_channel_id)
+            base = found if isinstance(found, discord.VoiceChannel) else None
+            missing = "its base channel was deleted; pick a new one in the editor"
+        else:
+            # Saved before the editor picked channels: the base is found by name.
+            base = canonical_managed_channels(channels, spec).get(1)
+            missing = f"no voice channel is named {spec.base_name!r}"
+        if base is None:
+            self._set_paused(guild, pool, missing)
+            return None
+
+        live = replace(spec, base_name=base.name)
+        if longest_name_too_long(live):
+            self._set_paused(
+                guild,
+                pool,
+                f"{live.channel_name(live.max_channels)!r} would exceed Discord's "
+                f"{MAX_CHANNEL_NAME_LENGTH} character limit; shorten the base channel's name",
+            )
+            return None
+        self._set_paused(guild, pool, None)
+
+        if (
+            spec.base_channel_id is not None
+            and pool.last_base_name is not None
+            and pool.last_base_name != base.name
+        ):
+            self._queue_extra_renames(channels, pool, replace(spec, base_name=pool.last_base_name))
+        pool.last_base_name = base.name
+
+        if spec.base_channel_id is not None:
+            members = pool_members(channels, base, live)
+        else:
+            # Keep every match, so duplicates still block the pass.
+            members = [c for c in channels if parse_channel_number(c.name, live) is not None]
+        return ResolvedPool(spec=live, base=base, channels=members)
+
+    @staticmethod
+    def _queue_extra_renames(
+        channels: Iterable[discord.VoiceChannel],
+        pool: ManagedPool,
+        old_spec: ChannelPoolSpec,
+    ) -> None:
+        for number, channel in canonical_managed_channels(channels, old_spec).items():
+            if number > 1:
+                pool.pending_renames.setdefault(channel.id, number)
+
+    async def _apply_pending_renames(
+        self, guild: discord.Guild, pool: ManagedPool, spec: ChannelPoolSpec
+    ) -> bool:
+        """Rename extras after their base channel. True if the pass must stop.
+
+        The guild snapshot still has the old names until Discord's update
+        events land, so planning in the same pass would miss the renamed
+        extras and create new ones. Those events start the next pass.
+        """
+        if not pool.pending_renames:
+            return False
+        renamed_any = False
+        for channel_id, number in list(pool.pending_renames.items()):
+            channel = guild.get_channel(channel_id)
+            target = spec.channel_name(number)
+            if not isinstance(channel, discord.VoiceChannel) or channel.name == target:
+                pool.pending_renames.pop(channel_id, None)
+                continue
+            renamed_any = True
+            try:
+                await channel.edit(
+                    name=target, reason=f"The {spec.base_name} base channel was renamed"
+                )
+                log.info("Renamed %s to %s in guild %s", channel.name, target, guild.id)
+            except discord.RateLimited:
+                log.warning(
+                    "Renaming %s in guild %s is rate limited; retrying later",
+                    channel.name,
+                    guild.id,
+                )
+                continue
+            except discord.DiscordException:
+                # Give up on this one: it keeps its old name and leaves the pool.
+                log.exception("Failed to rename %s in guild %s", channel.name, guild.id)
+            pool.pending_renames.pop(channel_id, None)
+        return renamed_any or bool(pool.pending_renames)
+
     def _plan_pool_changes(
         self,
         action: str,
         guild: discord.Guild,
-        channels: list[discord.VoiceChannel],
+        resolved: ResolvedPool,
         pool: ManagedPool,
     ) -> ReconcilePlan | None:
         now = time.monotonic()
         refresh_empty_timers(
-            channels,
+            resolved.channels,
             pool.empty_since_by_channel_id,
             now,
-            pool.spec,
+            resolved.spec,
         )
 
         plan = plan_reconcile(
-            channels,
+            resolved.channels,
             pool.empty_since_by_channel_id,
             now,
-            pool.spec,
+            resolved.spec,
         )
         if plan.blocked_reason is not None:
             log.warning(
                 "Skipping %s for guild %s pool %s: %s",
                 action,
                 guild.id,
-                pool.spec.base_name,
+                resolved.spec.base_name,
                 plan.blocked_reason,
             )
             return None
@@ -307,30 +451,38 @@ class BotChan(commands.Bot):
         guild: discord.Guild,
         channels: list[discord.VoiceChannel],
         pool: ManagedPool,
+        *,
+        create: bool = True,
     ) -> None:
-        plan = self._plan_pool_changes("reconcile", guild, channels, pool)
+        resolved = self._resolve_pool(guild, channels, pool)
+        if resolved is None:
+            return
+        if await self._apply_pending_renames(guild, pool, resolved.spec):
+            return
+
+        plan = self._plan_pool_changes("reconcile" if create else "cleanup", guild, resolved, pool)
         if plan is None:
             return
 
         # Track created channels locally: the guild snapshot is taken once per
-        # pass, so without this the second channel of a fresh pool has nothing
-        # to clone and lands on the same position as the first.
-        working = list(channels)
-        template = base_channel(working, pool.spec)
-
-        for number in plan.create_numbers:
-            new_channel = await self._create_channel(guild, pool.spec, template, number, working)
-            if new_channel is None:
-                break
-            working.append(new_channel)
-            # The seed channel becomes the template for the rest of this pass.
-            if template is None:
-                template = new_channel
+        # pass, so without this each new channel would be positioned as if the
+        # others did not exist.
+        working = list(resolved.channels)
+        if create:
+            for number in plan.create_numbers:
+                new_channel = await self._create_channel(
+                    guild, resolved.spec, resolved.base, number, working
+                )
+                if new_channel is None:
+                    break
+                working.append(new_channel)
 
         await self._delete_channels(pool, plan.delete_channel_ids)
 
         deleted = set(plan.delete_channel_ids)
-        await self._sync_pool_settings(guild, [c for c in working if c.id not in deleted], pool)
+        await self._sync_pool_settings(
+            guild, [c for c in working if c.id not in deleted], pool, resolved.spec
+        )
 
     @tasks.loop(seconds=CLEANUP_INTERVAL_SECONDS)
     async def cleanup_empty_channels(self) -> None:
@@ -352,15 +504,7 @@ class BotChan(commands.Bot):
             return
         channels = list(guild.voice_channels)
         for pool in managed_guild.pools:
-            plan = self._plan_pool_changes("cleanup", guild, channels, pool)
-            if plan is None:
-                continue
-            await self._delete_channels(pool, plan.delete_channel_ids)
-
-            deleted = set(plan.delete_channel_ids)
-            await self._sync_pool_settings(
-                guild, [c for c in channels if c.id not in deleted], pool
-            )
+            await self._reconcile_pool(guild, channels, pool, create=False)
 
     @cleanup_empty_channels.before_loop
     async def before_cleanup_empty_channels(self) -> None:
@@ -370,30 +514,21 @@ class BotChan(commands.Bot):
         self,
         guild: discord.Guild,
         spec: ChannelPoolSpec,
-        template: discord.VoiceChannel | None,
+        template: discord.VoiceChannel,
         number: int,
         channels: Iterable[discord.VoiceChannel],
     ) -> discord.VoiceChannel | None:
         try:
-            if template is None:
-                # The pool is empty, so seed it with a bare channel and let
-                # Discord apply its defaults. An admin customizes that channel
-                # in Discord and the sync carries the result to the rest.
-                new_channel = await guild.create_voice_channel(
-                    name=spec.channel_name(number),
-                    reason=f"Seeding the {spec.base_name} channel pool",
-                )
-            else:
-                new_channel = await guild.create_voice_channel(
-                    name=spec.channel_name(number),
-                    category=template.category,
-                    overwrites=template.overwrites,
-                    bitrate=template.bitrate,
-                    user_limit=template.user_limit,
-                    rtc_region=template.rtc_region,
-                    video_quality_mode=template.video_quality_mode,
-                    reason=f"All {spec.base_name} voice channels are occupied",
-                )
+            new_channel = await guild.create_voice_channel(
+                name=spec.channel_name(number),
+                category=template.category,
+                overwrites=template.overwrites,
+                bitrate=template.bitrate,
+                user_limit=template.user_limit,
+                rtc_region=template.rtc_region,
+                video_quality_mode=template.video_quality_mode,
+                reason=f"All {spec.base_name} voice channels are occupied",
+            )
         except discord.DiscordException:
             log.exception("Failed to create %s in guild %s", spec.channel_name(number), guild.id)
             return None
@@ -407,20 +542,21 @@ class BotChan(commands.Bot):
         guild: discord.Guild,
         channels: list[discord.VoiceChannel],
         pool: ManagedPool,
+        spec: ChannelPoolSpec,
     ) -> None:
-        template = base_channel(channels, pool.spec)
+        template = base_channel(channels, spec)
         if template is None:
             pool.last_sync_by_channel_id.clear()
             return
 
         managed_ids = {
-            channel.id for channel in canonical_managed_channels(channels, pool.spec).values()
+            channel.id for channel in canonical_managed_channels(channels, spec).values()
         }
         for channel_id in set(pool.last_sync_by_channel_id) - managed_ids:
             pool.last_sync_by_channel_id.pop(channel_id, None)
 
         desired = settings_fingerprint(template)
-        for channel in channels_needing_sync(channels, pool.spec):
+        for channel in channels_needing_sync(channels, spec):
             # Nothing has moved since our last attempt on this channel, so
             # repeating it would produce the same result and loop forever.
             if pool.last_sync_by_channel_id.get(channel.id) == (
@@ -438,7 +574,7 @@ class BotChan(commands.Bot):
                     user_limit=template.user_limit,
                     rtc_region=template.rtc_region,
                     video_quality_mode=template.video_quality_mode,
-                    reason=f"Sync with the {pool.spec.base_name} base channel",
+                    reason=f"Sync with the {spec.base_name} base channel",
                 )
                 if edited is not None:
                     # discord.py 2.x returns the edited channel rather than

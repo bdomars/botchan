@@ -544,6 +544,12 @@ select[aria-invalid="true"] {
     margin-bottom: 12px;
 }
 
+.pools-intro {
+    max-width: 62ch;
+    margin: -4px 0 16px;
+    font-size: 0.8rem;
+}
+
 .duration-input {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 130px;

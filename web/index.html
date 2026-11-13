@@ -154,10 +154,36 @@
                             <p class="section-number">02</p>
                             <h2>Channel pools</h2>
                         </div>
-                        <button class="button button-primary" type="button" @click="addPool">
-                            <span aria-hidden="true">＋</span> Add pool
-                        </button>
+                        <div class="header-actions">
+                            <button
+                                class="button button-secondary"
+                                type="button"
+                                :disabled="channelsLoading"
+                                @click="loadChannels"
+                            >{{ channelsLoading ? "Loading…" : "Refresh channels" }}</button>
+                            <button class="button button-primary" type="button" @click="addPool">
+                                <span aria-hidden="true">＋</span> Add pool
+                            </button>
+                        </div>
                     </div>
+
+                    <p class="field-help pools-intro">
+                        Each pool grows from a voice channel you set up in Discord. BotChan copies
+                        that channel's category, permissions, bitrate and other settings to every
+                        channel it adds, and names them after it.
+                    </p>
+
+                    <p v-if="channelsError" class="field-error standalone-error" role="alert">
+                        {{ channelsError }}
+                    </p>
+                    <p
+                        v-else-if="channels && channels.length === 0"
+                        class="field-error standalone-error"
+                        role="status"
+                    >
+                        This server has no voice channels yet. Create one in Discord, set it up the
+                        way you want the pool to look, then refresh.
+                    </p>
 
                     <p
                         v-if="validation.errors.channel_pools"
@@ -175,14 +201,14 @@
                         <div class="pool-card-heading">
                             <div>
                                 <span class="pool-index">{{ String(index + 1).padStart(2, "0") }}</span>
-                                <h3>{{ pool.base_name.trim() || "Untitled pool" }}</h3>
+                                <h3>{{ poolName(pool) || "New pool" }}</h3>
                             </div>
                             <div class="icon-actions">
                                 <button
                                     class="icon-button"
                                     type="button"
                                     :disabled="index === 0"
-                                    :aria-label="'Move ' + (pool.base_name || 'pool') + ' up'"
+                                    :aria-label="'Move ' + (poolName(pool) || 'pool') + ' up'"
                                     title="Move up"
                                     @click="movePool(index, -1)"
                                 >↑</button>
@@ -190,14 +216,14 @@
                                     class="icon-button"
                                     type="button"
                                     :disabled="index === draft.channel_pools.length - 1"
-                                    :aria-label="'Move ' + (pool.base_name || 'pool') + ' down'"
+                                    :aria-label="'Move ' + (poolName(pool) || 'pool') + ' down'"
                                     title="Move down"
                                     @click="movePool(index, 1)"
                                 >↓</button>
                                 <button
                                     class="icon-button danger"
                                     type="button"
-                                    :aria-label="'Remove ' + (pool.base_name || 'pool')"
+                                    :aria-label="'Remove ' + (poolName(pool) || 'pool')"
                                     title="Remove pool"
                                     @click="removePool(index)"
                                 >×</button>
@@ -206,19 +232,41 @@
 
                         <div class="field-grid">
                             <label class="field field-wide">
-                                <span class="field-label">Base channel name</span>
-                                <input
-                                    v-model="pool.base_name"
-                                    type="text"
-                                    autocomplete="off"
-                                    placeholder="Other Games"
-                                    :aria-invalid="Boolean(validation.errors.pools[index]?.base_name)"
+                                <span class="field-label">Base channel</span>
+                                <select
+                                    v-model="pool.base_channel_id"
+                                    :disabled="channels === null"
+                                    :aria-invalid="Boolean(validation.errors.pools[index]?.base_channel_id)"
                                 >
+                                    <option value="" disabled>
+                                        {{ channels === null ? "Loading channels…" : "Choose a voice channel" }}
+                                    </option>
+                                    <option
+                                        v-if="poolBaseMissing(pool)"
+                                        :value="pool.base_channel_id"
+                                        disabled
+                                    >{{ pool.base_name || "Unknown channel" }} (deleted in Discord)</option>
+                                    <optgroup
+                                        v-for="(group, groupIndex) in channelGroups"
+                                        :key="groupIndex"
+                                        :label="group.category ?? 'No category'"
+                                    >
+                                        <option
+                                            v-for="channel in group.channels"
+                                            :key="channel.id"
+                                            :value="channel.id"
+                                            :disabled="channelUnavailable(channel, index)"
+                                        >{{ channelLabel(channel, index) }}</option>
+                                    </optgroup>
+                                </select>
+                                <span class="field-help">
+                                    To change the pool's name or settings, edit this channel in Discord.
+                                </span>
                                 <span
-                                    v-if="validation.errors.pools[index]?.base_name"
+                                    v-if="validation.errors.pools[index]?.base_channel_id"
                                     class="field-error"
                                     role="alert"
-                                >{{ validation.errors.pools[index].base_name }}</span>
+                                >{{ validation.errors.pools[index].base_channel_id }}</span>
                             </label>
 
                             <label class="field">

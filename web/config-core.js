@@ -7,8 +7,11 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
     "use strict";
 
+    // Discord rejects longer channel names.
+    const MAX_CHANNEL_NAME_LENGTH = 100;
     const POOL_DEFAULTS = Object.freeze({
-        base_name: "Other Games",
+        base_channel_id: "",
+        base_name: "",
         min_channels: 3,
         max_channels: 10,
         idle_seconds: 600,
@@ -31,7 +34,7 @@
             guild_id: String(draft.guild_id || ""),
             channel_pools: (draft.channel_pools || []).map(function (pool) {
                 return {
-                    base_name: String(pool.base_name),
+                    base_channel_id: String(pool.base_channel_id || ""),
                     min_channels: String(pool.min_channels),
                     max_channels: String(pool.max_channels),
                     idle_value: String(pool.idle_value),
@@ -44,7 +47,9 @@
     function poolToDraft(pool) {
         const idle = secondsToDisplay(pool.idle_seconds);
         return {
-            base_name: String(pool.base_name),
+            base_channel_id: pool.base_channel_id ? String(pool.base_channel_id) : "",
+            // The name as last saved: shown when the channel has since gone.
+            base_name: String(pool.base_name ?? ""),
             min_channels: String(pool.min_channels),
             max_channels: String(pool.max_channels),
             idle_value: String(idle.value),
@@ -86,12 +91,96 @@
         return Number.isSafeInteger(parsed) ? parsed : null;
     }
 
-    function validateDraft(draft) {
+    function channelName(baseName, number) {
+        return number === 1 ? baseName : baseName + " #" + number;
+    }
+
+    // Counted in code points, as Python and Discord count them, so an emoji
+    // is one character rather than two.
+    function nameLength(name) {
+        return Array.from(name).length;
+    }
+
+    // Mirrors the bot: "<base> #N" with N above 1 is that pool's extra.
+    function looksLikeExtraOf(name, baseName) {
+        const prefix = baseName + " #";
+        if (!name.startsWith(prefix)) {
+            return false;
+        }
+        const number = name.slice(prefix.length);
+        return /^\d+$/.test(number) && Number(number) > 1;
+    }
+
+    function findChannel(channels, channelId) {
+        return (channels || []).find(function (channel) {
+            return channel.id === channelId;
+        }) || null;
+    }
+
+    // The base channel's current name, falling back to the name last saved.
+    function poolBaseName(pool, channels) {
+        const channel = findChannel(channels, String(pool.base_channel_id || ""));
+        return channel ? channel.name : String(pool.base_name || "");
+    }
+
+    function groupChannels(channels) {
+        const groups = [];
+        (channels || []).forEach(function (channel) {
+            const last = groups[groups.length - 1];
+            if (last && last.category === channel.category) {
+                last.channels.push(channel);
+            } else {
+                groups.push({ category: channel.category, channels: [channel] });
+            }
+        });
+        return groups;
+    }
+
+    // Why a channel cannot be the base of pools[poolIndex], or "".
+    function channelUnavailableReason(channel, pools, poolIndex, channels) {
+        for (let index = 0; index < pools.length; index += 1) {
+            if (index === poolIndex) {
+                continue;
+            }
+            const other = pools[index];
+            if (String(other.base_channel_id || "") === channel.id) {
+                return "used by another pool";
+            }
+            const otherName = poolBaseName(other, channels);
+            if (otherName && looksLikeExtraOf(channel.name, otherName)) {
+                return "an extra of the " + otherName + " pool";
+            }
+        }
+        return "";
+    }
+
+    // Pools saved before the editor picked channels only know a name. Match
+    // each to the one voice channel with that name, if there is exactly one.
+    function adoptPoolsByName(draft, channels) {
+        let adopted = 0;
+        (draft.channel_pools || []).forEach(function (pool) {
+            if (pool.base_channel_id || !pool.base_name) {
+                return;
+            }
+            const matches = (channels || []).filter(function (channel) {
+                return channel.name === pool.base_name;
+            });
+            if (matches.length === 1) {
+                pool.base_channel_id = matches[0].id;
+                adopted += 1;
+            }
+        });
+        return adopted;
+    }
+
+    // channels is the guild's voice channel list, or null while it loads.
+    function validateDraft(draft, channels) {
         const errors = {
             guild_id: "",
             channel_pools: "",
             pools: [],
         };
+        const channelList = Array.isArray(channels) ? channels : null;
 
         const guildId = String(draft && draft.guild_id !== undefined ? draft.guild_id : "").trim();
         if (!/^[1-9]\d*$/.test(guildId)) {
@@ -103,24 +192,27 @@
             errors.channel_pools = "Add at least one channel pool.";
         }
 
-        const names = new Map();
+        const channelIds = new Map();
         const normalizedPools = pools.map(function (pool, index) {
             const poolErrors = {
-                base_name: "",
+                base_channel_id: "",
                 min_channels: "",
                 max_channels: "",
                 idle_seconds: "",
             };
-            const baseName = String(pool.base_name ?? "").trim();
-            if (!baseName) {
-                poolErrors.base_name = "Base name is required.";
-            } else if (names.has(baseName)) {
-                poolErrors.base_name = "Base names must be unique in this guild.";
-                const firstIndex = names.get(baseName);
-                errors.pools[firstIndex].base_name =
-                    "Base names must be unique in this guild.";
+            const channelId = String(pool.base_channel_id || "").trim();
+            if (!channelId) {
+                poolErrors.base_channel_id = "Pick the voice channel this pool grows from.";
+            } else if (channelIds.has(channelId)) {
+                poolErrors.base_channel_id = "Each pool needs its own base channel.";
+                errors.pools[channelIds.get(channelId)].base_channel_id =
+                    "Each pool needs its own base channel.";
             } else {
-                names.set(baseName, index);
+                channelIds.set(channelId, index);
+                if (channelList && !findChannel(channelList, channelId)) {
+                    poolErrors.base_channel_id =
+                        "This channel was deleted in Discord, so the pool is paused. Pick another one.";
+                }
             }
 
             const minChannels = parsePositiveInteger(pool.min_channels);
@@ -134,6 +226,18 @@
                 poolErrors.max_channels = "Maximum must be at least the minimum.";
             }
 
+            const baseName = channelList ? poolBaseName(pool, channelList) : "";
+            if (
+                baseName &&
+                maxChannels !== null &&
+                nameLength(channelName(baseName, maxChannels)) > MAX_CHANNEL_NAME_LENGTH
+            ) {
+                poolErrors.max_channels =
+                    "\u201c" + channelName(baseName, maxChannels) + "\u201d would pass Discord's " +
+                    MAX_CHANNEL_NAME_LENGTH + " character limit. Lower the maximum or " +
+                    "shorten the channel's name in Discord.";
+            }
+
             const idleSeconds = durationToSeconds(pool.idle_value, pool.idle_unit);
             if (idleSeconds === null) {
                 poolErrors.idle_seconds =
@@ -142,12 +246,31 @@
 
             errors.pools.push(poolErrors);
             return {
-                base_name: baseName,
+                base_channel_id: channelId,
                 min_channels: minChannels,
                 max_channels: maxChannels,
                 idle_seconds: idleSeconds,
             };
         });
+
+        if (channelList) {
+            pools.forEach(function (pool, index) {
+                const name = poolBaseName(pool, channelList);
+                pools.forEach(function (other, otherIndex) {
+                    const otherName = poolBaseName(other, channelList);
+                    if (index === otherIndex || !name || !otherName || errors.pools[index].base_channel_id) {
+                        return;
+                    }
+                    if (name === otherName) {
+                        errors.pools[index].base_channel_id =
+                            "Another pool's channel has the same name. Rename one of them in Discord.";
+                    } else if (looksLikeExtraOf(name, otherName)) {
+                        errors.pools[index].base_channel_id =
+                            "This looks like an extra channel of the " + otherName + " pool.";
+                    }
+                });
+            });
+        }
 
         const valid =
             !errors.guild_id &&
@@ -187,7 +310,13 @@
     }
 
     return Object.freeze({
+        MAX_CHANNEL_NAME_LENGTH: MAX_CHANNEL_NAME_LENGTH,
         POOL_DEFAULTS: POOL_DEFAULTS,
+        adoptPoolsByName: adoptPoolsByName,
+        channelName: channelName,
+        channelUnavailableReason: channelUnavailableReason,
+        groupChannels: groupChannels,
+        poolBaseName: poolBaseName,
         UNIT_SECONDS: UNIT_SECONDS,
         defaultDraft: defaultDraft,
         draftFingerprint: draftFingerprint,

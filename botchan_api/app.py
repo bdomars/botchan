@@ -14,12 +14,13 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import RequestResponseEndpoint
 
 from botchan.config import ChannelPoolConfig, GuildConfig
+from botchan.reconciliation import pool_name_problems
 from botchan_api.database import create_database
 from botchan_api.discord_client import DiscordAPIError, DiscordClient
 from botchan_api.models import GuildConfigRow, GuildConfigVersion, OAuthSession
@@ -36,6 +37,9 @@ MANAGE_CHANNELS = 1 << 4
 MANAGE_ROLES = 1 << 28
 BOT_PERMISSIONS = MANAGE_CHANNELS | MANAGE_ROLES
 BOT_GUILD_CACHE_SECONDS = 30
+# Discord channel types.
+VOICE_CHANNEL = 2
+CATEGORY_CHANNEL = 4
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 PROJECT_ROOT = WEB_ROOT.parent
 log = logging.getLogger("botchan.api")
@@ -53,10 +57,13 @@ class ConfigWrite(BaseModel):
     channel_pools: list[ChannelPoolConfig] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def unique_names(self) -> Self:
-        names = [pool.base_name for pool in self.channel_pools]
-        if len(names) != len(set(names)):
-            raise ValueError("channel pool base names must be unique")
+    def unique_base_channels(self) -> Self:
+        # Names are filled in from Discord on save; the channel is the identity.
+        ids = [pool.base_channel_id for pool in self.channel_pools]
+        if any(channel_id is None for channel_id in ids):
+            raise ValueError("every channel pool needs a base_channel_id")
+        if len(ids) != len(set(ids)):
+            raise ValueError("a channel can be the base of only one pool")
         return self
 
 
@@ -74,6 +81,44 @@ def config_etag(revision: int) -> str:
 
 def valid_snowflake(value: str) -> bool:
     return value.isdigit() and value[0] != "0" and len(value) <= 20
+
+
+def voice_channel_list(channels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A guild's voice channels in the order Discord's sidebar shows them."""
+    categories = {
+        str(channel["id"]): channel
+        for channel in channels
+        if channel.get("type") == CATEGORY_CHANNEL
+    }
+
+    def parent(channel: dict[str, Any]) -> dict[str, Any] | None:
+        return categories.get(str(channel.get("parent_id")))
+
+    def sort_key(channel: dict[str, Any]) -> tuple[int, int, int, int]:
+        category = parent(channel)
+        # Channels outside any category sit above every category.
+        return (
+            -1 if category is None else int(category.get("position", 0)),
+            0 if category is None else int(category["id"]),
+            int(channel.get("position", 0)),
+            int(channel["id"]),
+        )
+
+    voice = sorted(
+        (channel for channel in channels if channel.get("type") == VOICE_CHANNEL),
+        key=sort_key,
+    )
+    result = []
+    for channel in voice:
+        category = parent(channel)
+        result.append(
+            {
+                "id": str(channel["id"]),
+                "name": channel["name"],
+                "category": None if category is None else category["name"],
+            }
+        )
+    return result
 
 
 def has_bot_permissions(granted: int) -> bool:
@@ -251,6 +296,15 @@ def create_app(
                     409, "BOT_NOT_INSTALLED", "Install BotChan before configuring this guild."
                 )
         return guild
+
+    async def guild_voice_channels(guild_id: str) -> list[dict[str, Any]]:
+        try:
+            return voice_channel_list(await discord.guild_channels(guild_id))
+        except DiscordAPIError as exc:
+            log.exception("Loading channels for guild %s failed", guild_id)
+            raise error(
+                503, "DISCORD_UNAVAILABLE", "The server's channels could not be loaded."
+            ) from exc
 
     def check_csrf(request: Request, oauth_session: OAuthSession) -> None:
         supplied = request.headers.get("X-CSRF-Token", "")
@@ -444,6 +498,11 @@ def create_app(
         response.headers["ETag"] = config_etag(row.revision)
         return response
 
+    @app.get("/api/guilds/{guild_id}/channels")
+    async def channel_list(guild_id: str, db: DB, oauth_session: AuthSession) -> dict[str, Any]:
+        await authorized_guild(guild_id, oauth_session, db, force=False)
+        return {"channels": await guild_voice_channels(guild_id)}
+
     @app.put("/api/guilds/{guild_id}/config")
     async def put_config(
         guild_id: str,
@@ -456,9 +515,31 @@ def create_app(
     ) -> JSONResponse:
         check_csrf(request, oauth_session)
         await authorized_guild(guild_id, oauth_session, db, force=True)
-        validated = GuildConfig.model_validate(
-            {"guild_id": int(guild_id), "channel_pools": body.model_dump()["channel_pools"]}
-        )
+        channel_names = {
+            channel["id"]: channel["name"] for channel in await guild_voice_channels(guild_id)
+        }
+        pools = []
+        for pool in body.channel_pools:
+            name = channel_names.get(pool.base_channel_id or "")
+            if name is None:
+                raise error(
+                    422,
+                    "BASE_CHANNEL_NOT_FOUND",
+                    "A pool's base channel is no longer a voice channel in this server. "
+                    "Pick another one.",
+                )
+            # The stored name is what the editor shows; the bot always uses the
+            # channel's current name.
+            pools.append(pool.model_copy(update={"base_name": name}))
+        problems = pool_name_problems([pool.to_spec() for pool in pools])
+        if problems:
+            raise error(422, "POOL_NAMES_CONFLICT", " ".join(problems))
+        try:
+            validated = GuildConfig.model_validate(
+                {"guild_id": int(guild_id), "channel_pools": [pool.model_dump() for pool in pools]}
+            )
+        except ValidationError as exc:
+            raise error(422, "INVALID_POOLS", str(exc)) from exc
         await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:guild_id, 0))"),
             {"guild_id": guild_id},

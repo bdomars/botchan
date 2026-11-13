@@ -14,6 +14,7 @@ from botchan_api.app import (
     config_etag,
     has_bot_permissions,
     valid_snowflake,
+    voice_channel_list,
 )
 from botchan_api.discord_client import (
     MAX_ERROR_BODY_LENGTH,
@@ -62,12 +63,12 @@ class APIContractTests(unittest.TestCase):
     def test_administrator_satisfies_bot_permissions(self) -> None:
         self.assertTrue(has_bot_permissions(ADMINISTRATOR))
 
-    def test_write_requires_at_least_one_unique_valid_pool(self) -> None:
+    def test_write_requires_pools_with_distinct_base_channels(self) -> None:
         valid = ConfigWrite.model_validate(
             {
                 "channel_pools": [
                     {
-                        "base_name": " Other Games ",
+                        "base_channel_id": "223456789012345678",
                         "min_channels": 3,
                         "max_channels": 10,
                         "idle_seconds": 600,
@@ -75,14 +76,46 @@ class APIContractTests(unittest.TestCase):
                 ]
             }
         )
-        self.assertEqual(valid.channel_pools[0].base_name, "Other Games")
+        self.assertEqual(valid.channel_pools[0].base_channel_id, "223456789012345678")
 
         with self.assertRaises(ValidationError):
             ConfigWrite.model_validate({"channel_pools": []})
+        # Picking a channel is now how a pool is made.
+        with self.assertRaises(ValidationError):
+            ConfigWrite.model_validate({"channel_pools": [{"base_name": "Other Games"}]})
         with self.assertRaises(ValidationError):
             ConfigWrite.model_validate(
-                {"channel_pools": [{"base_name": "Same"}, {"base_name": "Same"}]}
+                {
+                    "channel_pools": [
+                        {"base_channel_id": "223456789012345678"},
+                        {"base_channel_id": "223456789012345678"},
+                    ]
+                }
             )
+        with self.assertRaises(ValidationError):
+            ConfigWrite.model_validate({"channel_pools": [{"base_channel_id": "general"}]})
+
+    def test_voice_channels_are_listed_in_sidebar_order(self) -> None:
+        channels = [
+            {"id": "10", "type": 4, "name": "Gaming", "position": 1},
+            {"id": "11", "type": 4, "name": "Lobby", "position": 0},
+            {"id": "20", "type": 2, "name": "Raid", "position": 1, "parent_id": "10"},
+            {"id": "21", "type": 2, "name": "Other Games", "position": 0, "parent_id": "10"},
+            {"id": "22", "type": 2, "name": "AFK", "position": 0, "parent_id": "11"},
+            {"id": "23", "type": 2, "name": "Loose", "position": 5, "parent_id": None},
+            {"id": "30", "type": 0, "name": "general", "position": 0, "parent_id": "11"},
+            {"id": "31", "type": 13, "name": "Stage", "position": 0, "parent_id": "11"},
+        ]
+
+        self.assertEqual(
+            voice_channel_list(channels),
+            [
+                {"id": "23", "name": "Loose", "category": None},
+                {"id": "22", "name": "AFK", "category": "Lobby"},
+                {"id": "21", "name": "Other Games", "category": "Gaming"},
+                {"id": "20", "name": "Raid", "category": "Gaming"},
+            ],
+        )
 
 
 class DiscordClientTests(unittest.IsolatedAsyncioTestCase):

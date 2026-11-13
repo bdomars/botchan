@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import itertools
 import unittest
+from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import patch
+
+import discord
 
 from botchan.client import BotChan, ManagedGuild, ManagedPool
 from botchan.config import ChannelPoolSpec
@@ -41,6 +44,7 @@ class FakeVoiceChannel:
         # When set, every edit snaps bitrate back, standing in for a value
         # Discord clamps or silently refuses.
         self.clamp_bitrate_to: int | None = None
+        self.fail_next_edit: Exception | None = None
         self.edits = 0
 
     @property
@@ -48,6 +52,9 @@ class FakeVoiceChannel:
         return None if self.category is None else self.category.id
 
     async def edit(self, **settings: Any) -> FakeVoiceChannel:
+        if self.fail_next_edit is not None:
+            error, self.fail_next_edit = self.fail_next_edit, None
+            raise error
         self.edits += 1
         settings.pop("reason", None)
         for key, value in settings.items():
@@ -67,6 +74,14 @@ class FakeGuild:
     def voice_channels(self) -> list[FakeVoiceChannel]:
         return list(self.channels)
 
+    def get_channel(self, channel_id: int) -> FakeVoiceChannel | None:
+        return next((c for c in self.channels if c.id == channel_id), None)
+
+    def add(self, name: str, **settings: Any) -> FakeVoiceChannel:
+        channel = FakeVoiceChannel(name, self, **settings)
+        self.channels.append(channel)
+        return channel
+
     async def create_voice_channel(
         self, name: str, reason: str | None = None, **settings: Any
     ) -> FakeVoiceChannel:
@@ -80,7 +95,13 @@ class ChannelSyncTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.bot = BotChan(cast(Any, object()))
         self.guild = FakeGuild()
-        self.pool = ManagedPool(spec=SPEC)
+        # An admin creates the base channel in Discord, then picks it.
+        self.base = self.guild.add("Other Games")
+        self.pool = ManagedPool(spec=replace(SPEC, base_channel_id=self.base.id))
+        # client.py narrows on discord.VoiceChannel, so the fakes must pass it.
+        patcher = patch("botchan.client.discord.VoiceChannel", FakeVoiceChannel)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     async def reconcile(self) -> None:
         await self.bot._reconcile_pool(
@@ -91,26 +112,14 @@ class ChannelSyncTests(unittest.IsolatedAsyncioTestCase):
         await self.reconcile()
         return tuple(self.guild.channels)
 
-    async def test_an_empty_pool_seeds_itself(self) -> None:
+    async def test_extras_are_created_from_the_base_channel(self) -> None:
         await self.reconcile()
 
         self.assertEqual(
             [channel.name for channel in self.guild.channels],
             ["Other Games", "Other Games #2", "Other Games #3"],
         )
-
-    async def test_the_seed_channel_takes_discord_defaults(self) -> None:
-        await self.reconcile()
-
-        name, settings, reason = self.guild.creates[0]
-        self.assertEqual(name, "Other Games")
-        self.assertEqual(settings, {})
-        self.assertIn("Seeding", reason or "")
-
-    async def test_later_channels_are_cloned_from_the_seed(self) -> None:
-        await self.reconcile()
-
-        _, settings, _ = self.guild.creates[1]
+        _, settings, _ = self.guild.creates[0]
         self.assertIn("bitrate", settings)
         self.assertIn("overwrites", settings)
 
@@ -186,23 +195,25 @@ class ChannelSyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_channels_outside_the_pool_are_untouched(self) -> None:
         base, _, _ = await self.seeded_pool()
         base.bitrate = 96000
-        stray = FakeVoiceChannel("General", self.guild, bitrate=8000)
-        self.guild.channels.append(stray)
+        stray = self.guild.add("General", bitrate=8000)
 
         await self.reconcile()
 
         self.assertEqual(stray.edits, 0)
         self.assertEqual(stray.bitrate, 8000)
 
-    async def test_a_missing_base_channel_is_cloned_from_the_survivors(self) -> None:
-        base, second, _ = await self.seeded_pool()
-        second.bitrate = 96000
-        self.guild.channels.remove(base)
+    async def test_a_namesake_of_the_base_channel_is_not_in_the_pool(self) -> None:
+        base, _, _ = await self.seeded_pool()
+        base.bitrate = 96000
+        namesake = self.guild.add("Other Games", bitrate=8000)
+        creates = len(self.guild.creates)
 
         await self.reconcile()
 
-        recreated = next(c for c in self.guild.channels if c.name == "Other Games")
-        self.assertEqual(recreated.bitrate, 96000)
+        # Not a duplicate that blocks the pool, and not synced either.
+        self.assertEqual(namesake.edits, 0)
+        self.assertEqual(len(self.guild.creates), creates)
+        self.assertNotIn(namesake.id, self.pool.empty_since_by_channel_id)
 
     async def test_sync_state_is_dropped_for_channels_that_leave_the_pool(
         self,
@@ -216,6 +227,98 @@ class ChannelSyncTests(unittest.IsolatedAsyncioTestCase):
         await self.reconcile()
 
         self.assertNotIn(third.id, self.pool.last_sync_by_channel_id)
+
+    async def test_a_deleted_base_channel_pauses_the_pool(self) -> None:
+        base, second, _ = await self.seeded_pool()
+        self.guild.channels.remove(base)
+        second.bitrate = 8000
+        creates, edits = len(self.guild.creates), second.edits
+
+        with self.assertLogs("botchan", "WARNING") as logs:
+            await self.reconcile()
+            await self.reconcile()
+
+        self.assertEqual(len(self.guild.creates), creates)
+        self.assertEqual(second.edits, edits)
+        self.assertIsNotNone(self.pool.paused_reason)
+        # Logged when the pool pauses, not on every pass.
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("base channel was deleted", logs.output[0])
+
+    async def test_picking_a_new_base_channel_resumes_the_pool(self) -> None:
+        base, _, _ = await self.seeded_pool()
+        self.guild.channels.remove(base)
+        with self.assertLogs("botchan", "WARNING"):
+            await self.reconcile()
+
+        replacement = self.guild.add("Other Games")
+        self.pool.spec = replace(self.pool.spec, base_channel_id=replacement.id)
+        await self.reconcile()
+
+        self.assertIsNone(self.pool.paused_reason)
+        self.assertEqual(
+            sorted(channel.name for channel in self.guild.channels),
+            ["Other Games", "Other Games #2", "Other Games #3"],
+        )
+
+    async def test_a_base_name_too_long_for_its_extras_pauses_the_pool(self) -> None:
+        # "#10" would push the longest extra past Discord's 100 characters.
+        self.base.name = "x" * 97
+
+        with self.assertLogs("botchan", "WARNING") as logs:
+            await self.reconcile()
+
+        self.assertEqual(self.guild.creates, [])
+        self.assertIn("character limit", logs.output[0])
+
+    async def test_renaming_the_base_channel_renames_the_extras(self) -> None:
+        base, second, third = await self.seeded_pool()
+        creates = len(self.guild.creates)
+
+        base.name = "Raid Rooms"
+        await self.reconcile()
+        await self.reconcile()
+
+        self.assertEqual(second.name, "Raid Rooms #2")
+        self.assertEqual(third.name, "Raid Rooms #3")
+        self.assertEqual(len(self.guild.creates), creates)
+        self.assertEqual(self.pool.pending_renames, {})
+
+    async def test_a_rate_limited_rename_is_retried_on_a_later_pass(self) -> None:
+        base, second, third = await self.seeded_pool()
+        third.fail_next_edit = discord.RateLimited(600.0)
+        creates = len(self.guild.creates)
+
+        base.name = "Raid Rooms"
+        with self.assertLogs("botchan", "WARNING"):
+            await self.reconcile()
+        self.assertEqual(second.name, "Raid Rooms #2")
+        self.assertEqual(third.name, "Other Games #3")
+
+        # Still waiting on the rename, so nothing else happens yet.
+        await self.reconcile()
+
+        self.assertEqual(third.name, "Raid Rooms #3")
+        self.assertEqual(len(self.guild.creates), creates)
+
+    async def test_a_pool_saved_by_name_finds_its_base_by_name(self) -> None:
+        self.pool = ManagedPool(spec=SPEC)
+
+        await self.reconcile()
+
+        self.assertEqual(
+            [channel.name for channel in self.guild.channels],
+            ["Other Games", "Other Games #2", "Other Games #3"],
+        )
+
+    async def test_a_pool_saved_by_name_without_its_base_pauses(self) -> None:
+        self.guild.channels.remove(self.base)
+        self.pool = ManagedPool(spec=SPEC)
+
+        with self.assertLogs("botchan", "WARNING"):
+            await self.reconcile()
+
+        self.assertEqual(self.guild.channels, [])
 
 
 class ChannelEventTests(unittest.IsolatedAsyncioTestCase):
@@ -291,6 +394,39 @@ class ChannelEventTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.on_guild_channel_delete(cast(Any, self.channel("General")))
 
         self.assertEqual(self.woken, [])
+
+    async def test_renaming_the_base_channel_wakes_the_bot(self) -> None:
+        base = self.guild.add("Raid Rooms")
+        self.pool.spec = replace(SPEC, base_channel_id=base.id)
+        before = self.channel("Raid Rooms")
+        before.id = base.id
+
+        await self.bot.on_guild_channel_update(cast(Any, before), cast(Any, base))
+        base.name = "Dungeon Rooms"
+        renamed = self.channel("Dungeon Rooms")
+        renamed.id = base.id
+        await self.bot.on_guild_channel_update(cast(Any, before), cast(Any, renamed))
+
+        # The first update changed nothing; the rename does.
+        self.assertEqual(self.woken, [self.guild.id])
+
+    async def test_extras_follow_the_base_channels_current_name(self) -> None:
+        base = self.guild.add("Raid Rooms")
+        self.pool.spec = replace(SPEC, base_channel_id=base.id)
+
+        await self.bot.on_guild_channel_delete(cast(Any, self.channel("Raid Rooms #3")))
+        await self.bot.on_guild_channel_delete(cast(Any, self.channel("Other Games #3")))
+
+        self.assertEqual(self.woken, [self.guild.id])
+
+    async def test_deleting_the_base_channel_wakes_the_bot(self) -> None:
+        base = self.guild.add("Raid Rooms")
+        self.pool.spec = replace(SPEC, base_channel_id=base.id)
+        self.guild.channels.remove(base)
+
+        await self.bot.on_guild_channel_delete(cast(Any, base))
+
+        self.assertEqual(self.woken, [self.guild.id])
 
     async def test_events_for_unmanaged_guilds_are_ignored(self) -> None:
         self.bot.managed_guilds = {}

@@ -92,6 +92,15 @@ class DiscordClient:
         )
         return await self._json(response)
 
+    async def guild_channels(self, guild_id: str) -> list[dict[str, Any]]:
+        """Every channel in a guild the bot is in, as Discord describes them."""
+        response = await self._request(
+            "GET",
+            f"{DISCORD_API}/guilds/{guild_id}/channels",
+            headers={"Authorization": f"Bot {self.settings.discord_bot_token}"},
+        )
+        return await self._json(response)
+
     async def bot_guilds(self) -> dict[str, int]:
         """Map each guild the bot is in to the permissions it holds there."""
         result: dict[str, int] = {}
