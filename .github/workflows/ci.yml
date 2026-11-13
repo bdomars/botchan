@@ -1,0 +1,179 @@
+name: CI
+
+# Every push and pull request runs the checks. A push to main also publishes
+# both images and deploys them, but only once the checks have passed.
+on:
+  push:
+  pull_request:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  INFRA_APP_PATH: apps/botchan-ng
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: botchan_test
+          POSTGRES_USER: botchan
+          POSTGRES_PASSWORD: botchan
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U botchan"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://botchan:botchan@localhost:5432/botchan_test
+      BOTCHAN_TEST_DATABASE_URL: postgresql+asyncpg://botchan:botchan@localhost:5432/botchan_test
+      DISCORD_CLIENT_ID: "123456789012345678"
+      DISCORD_CLIENT_SECRET: test-client-secret
+      DISCORD_TOKEN: test-bot-token
+      DISCORD_REDIRECT_URI: http://localhost:8000/auth/discord/callback
+      PUBLIC_BASE_URL: http://localhost:8000
+      SESSION_SECRET: test-session-secret
+      TOKEN_ENCRYPTION_KEY: 7JvP0p6UqcF1wbGgDPf8KmyDVeOt6sdq8s_Ro9T15Vc=
+      SECURE_COOKIES: "false"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+      - run: uv sync --frozen
+      - run: uv run alembic upgrade head
+      - run: uv run ty check
+      - run: uv run python -m compileall -q botchan botchan_api test_*.py
+      - run: uv run python -m unittest -v
+      - run: node --test web/test_config_core.js
+
+  publish:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The bot, published as <repository>
+          - dockerfile: Dockerfile
+            suffix: ""
+          # The configuration API and web UI, published as <repository>-api
+          - dockerfile: Dockerfile.api
+            suffix: "-api"
+
+    # A newer push supersedes a build still in progress. Its deploy is then
+    # skipped too, so an older commit can never be deployed after a newer one.
+    concurrency:
+      group: publish-image-${{ github.ref }}-${{ matrix.dockerfile }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            GIT_REV=${{ github.sha }}
+          # Separate scopes, so the two images don't evict each other's cache.
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.dockerfile }}
+
+  # Runs once, after both images are published. The bot and the API share the
+  # config document, the schema and the notification payload, so they are
+  # always deployed together from the same commit, along with the manifests.
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+
+    # Deploys write to the infra repo one at a time, in push order.
+    concurrency:
+      group: deploy-infra
+      cancel-in-progress: false
+
+    steps:
+      - name: Pick the tag to deploy
+        id: tag
+        # Matches the short sha tag docker/metadata-action published.
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out infra repository
+        uses: actions/checkout@v6
+        with:
+          repository: bdomars/infra
+          ref: argocd
+          ssh-key: ${{ secrets.INFRA_DEPLOY_KEY }}
+
+      - name: Point BotChan at this commit
+        working-directory: ${{ env.INFRA_APP_PATH }}
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          kustomize edit set image \
+            "${REGISTRY}/${IMAGE_NAME}:${TAG}" \
+            "${REGISTRY}/${IMAGE_NAME}-api:${TAG}"
+          # The base manifests come from this repo too. Pin them to the same
+          # commit, so the cluster never runs new images on old manifests.
+          sed -i "s#\(github\.com/${IMAGE_NAME}//k8s/base?ref=\)[^[:space:]]*#\1${GITHUB_SHA}#" \
+            kustomization.yaml
+          if ! grep -q "k8s/base?ref=${GITHUB_SHA}" kustomization.yaml; then
+            echo "::error::Could not find the k8s/base resource to pin in kustomization.yaml"
+            exit 1
+          fi
+          git diff
+
+      - name: Commit and push
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${INFRA_APP_PATH}/kustomization.yaml"
+          git diff --cached --quiet && exit 0
+          git commit -m "Deploy botchan ${TAG}" \
+            -m "From ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+          # Other projects deploy to the same branch; the concurrency group
+          # only orders this repo's runs, so retry if another push won.
+          for attempt in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (attempt ${attempt}); rebasing onto the latest infra"
+            git pull --rebase
+          done
+          exit 1
