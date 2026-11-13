@@ -16,6 +16,7 @@ from botchan.database_config import (
     GuildConfigChange,
     PostgresConfigSource,
 )
+from botchan.rate_limits import rate_limit_trace
 from botchan.reconciliation import (
     ReconcilePlan,
     base_channel,
@@ -32,10 +33,17 @@ from botchan.reconciliation import (
 log = logging.getLogger("botchan")
 
 CLEANUP_INTERVAL_SECONDS = 30
-# discord.py sleeps through rate limits by default. Channel renames are limited
-# to two per ten minutes, and sleeping through that would hold the guild lock
-# for minutes, so longer waits raise instead and the next pass retries.
-MAX_RATE_LIMIT_WAIT_SECONDS = 30
+# discord.py waits out rate limits by itself. A rename can wait ten minutes
+# (two per channel per ten minutes), and waiting inside a pass would hold the
+# guild lock that long, so renames and creates give up after this and a later
+# pass tries again.
+#
+# Not discord.py's max_ratelimit_timeout: that refuses every request in a
+# bucket whose window resets later than the timeout, even with requests left.
+# Channel creation's window is a day long, so it allowed one create per day.
+REQUEST_DEADLINE_SECONDS = 30
+# How long a guild waits to create channels again after a create gave up.
+CREATE_RETRY_SECONDS = 10 * 60
 
 # (settings requested, settings the channel had once the edit returned)
 type SyncRecord = tuple[tuple[object, ...], tuple[object, ...]]
@@ -88,7 +96,7 @@ class BotChan(commands.Bot):
         super().__init__(
             command_prefix=commands.when_mentioned,
             intents=intents,
-            max_ratelimit_timeout=MAX_RATE_LIMIT_WAIT_SECONDS,
+            http_trace=rate_limit_trace(),
         )
         self.managed_guilds: dict[int, ManagedGuild] = {}
         self._config_revisions: dict[int, int] = {}
@@ -98,6 +106,10 @@ class BotChan(commands.Bot):
         # still be waiting on one after its guild's config is deleted.
         self._guild_locks: dict[int, asyncio.Lock] = {}
         self._shutdown_task: asyncio.Task[None] | None = None
+        # Per guild, the monotonic time until which no pool tries to create
+        # channels, after Discord held a create back past the deadline.
+        self._creates_blocked_until: dict[int, float] = {}
+        self._monotonic = time.monotonic
 
     async def setup_hook(self) -> None:
         await self._config_source.start(
@@ -396,11 +408,14 @@ class BotChan(commands.Bot):
                 continue
             renamed_any = True
             try:
-                await channel.edit(
-                    name=target, reason=f"The {spec.base_name} base channel was renamed"
+                await asyncio.wait_for(
+                    channel.edit(
+                        name=target, reason=f"The {spec.base_name} base channel was renamed"
+                    ),
+                    REQUEST_DEADLINE_SECONDS,
                 )
                 log.info("Renamed %s to %s in guild %s", channel.name, target, guild.id)
-            except discord.RateLimited:
+            except TimeoutError:
                 log.warning(
                     "Renaming %s in guild %s is rate limited; retrying later",
                     channel.name,
@@ -468,7 +483,7 @@ class BotChan(commands.Bot):
         # pass, so without this each new channel would be positioned as if the
         # others did not exist.
         working = list(resolved.channels)
-        if create:
+        if create and plan.create_numbers and not self._creates_blocked(guild.id):
             for number in plan.create_numbers:
                 new_channel = await self._create_channel(
                     guild, resolved.spec, resolved.base, number, working
@@ -483,6 +498,16 @@ class BotChan(commands.Bot):
         await self._sync_pool_settings(
             guild, [c for c in working if c.id not in deleted], pool, resolved.spec
         )
+
+    def _creates_blocked(self, guild_id: int) -> bool:
+        until = self._creates_blocked_until.get(guild_id)
+        if until is None:
+            return False
+        if self._monotonic() < until:
+            return True
+        del self._creates_blocked_until[guild_id]
+        log.info("Creating channels in guild %s again", guild_id)
+        return False
 
     @tasks.loop(seconds=CLEANUP_INTERVAL_SECONDS)
     async def cleanup_empty_channels(self) -> None:
@@ -519,16 +544,31 @@ class BotChan(commands.Bot):
         channels: Iterable[discord.VoiceChannel],
     ) -> discord.VoiceChannel | None:
         try:
-            new_channel = await guild.create_voice_channel(
-                name=spec.channel_name(number),
-                category=template.category,
-                overwrites=template.overwrites,
-                bitrate=template.bitrate,
-                user_limit=template.user_limit,
-                rtc_region=template.rtc_region,
-                video_quality_mode=template.video_quality_mode,
-                reason=f"All {spec.base_name} voice channels are occupied",
+            new_channel = await asyncio.wait_for(
+                guild.create_voice_channel(
+                    name=spec.channel_name(number),
+                    category=template.category,
+                    overwrites=template.overwrites,
+                    bitrate=template.bitrate,
+                    user_limit=template.user_limit,
+                    rtc_region=template.rtc_region,
+                    video_quality_mode=template.video_quality_mode,
+                    reason=f"All {spec.base_name} voice channels are occupied",
+                ),
+                REQUEST_DEADLINE_SECONDS,
             )
+        except TimeoutError:
+            # Held back by a rate limit, most likely. Asking again on every
+            # voice event would only wait again, so pause creating for a while.
+            self._creates_blocked_until[guild.id] = self._monotonic() + CREATE_RETRY_SECONDS
+            log.warning(
+                "Creating %s in guild %s took over %s seconds; trying again in %s minutes",
+                spec.channel_name(number),
+                guild.id,
+                REQUEST_DEADLINE_SECONDS,
+                CREATE_RETRY_SECONDS // 60,
+            )
+            return None
         except discord.DiscordException:
             log.exception("Failed to create %s in guild %s", spec.channel_name(number), guild.id)
             return None

@@ -9,6 +9,8 @@
 
     // Discord rejects longer channel names.
     const MAX_CHANNEL_NAME_LENGTH = 100;
+    // Matches MIN_IDLE_SECONDS in botchan/config.py.
+    const MIN_IDLE_SECONDS = 60;
     const POOL_DEFAULTS = Object.freeze({
         base_channel_id: "",
         base_name: "",
@@ -242,6 +244,10 @@
             if (idleSeconds === null) {
                 poolErrors.idle_seconds =
                     "Timeout must resolve to a whole, non-negative number of seconds.";
+            } else if (idleSeconds < MIN_IDLE_SECONDS) {
+                poolErrors.idle_seconds =
+                    "Timeout must be at least a minute, so people hopping in and out " +
+                    "don't make BotChan create and delete channels over and over.";
             }
 
             errors.pools.push(poolErrors);
@@ -311,6 +317,7 @@
 
     return Object.freeze({
         MAX_CHANNEL_NAME_LENGTH: MAX_CHANNEL_NAME_LENGTH,
+        MIN_IDLE_SECONDS: MIN_IDLE_SECONDS,
         POOL_DEFAULTS: POOL_DEFAULTS,
         adoptPoolsByName: adoptPoolsByName,
         channelName: channelName,

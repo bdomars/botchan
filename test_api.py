@@ -94,6 +94,10 @@ class APIContractTests(unittest.TestCase):
             )
         with self.assertRaises(ValidationError):
             ConfigWrite.model_validate({"channel_pools": [{"base_channel_id": "general"}]})
+        with self.assertRaises(ValidationError):
+            ConfigWrite.model_validate(
+                {"channel_pools": [{"base_channel_id": "223456789012345678", "idle_seconds": 59}]}
+            )
 
     def test_voice_channels_are_listed_in_sidebar_order(self) -> None:
         channels = [

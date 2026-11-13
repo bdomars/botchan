@@ -228,6 +228,8 @@ node --test web/test_config_core.js
 - Renaming an extra channel in Discord removes it from its pool. The channel is left alone from then on, and the bot creates a replacement to restore the pool's minimum.
 - Extras follow a base channel rename only while the bot is running. If the base channel is renamed while the bot is offline, the old extras keep their names and are no longer part of the pool.
 - Discord allows two renames of a channel per ten minutes. If the base channel is renamed more often than that, the extras catch up once the limit allows, and the pool waits for them in the meantime.
+- Empty extras always wait at least a minute before they are deleted, so people hopping in and out do not make the bot create and delete channels over and over. Configurations saved with a shorter timeout are treated as one minute.
+- Discord allows a bot 2000 channel creations per server per day. If Discord holds a create back for more than 30 seconds, the bot stops creating channels in that server for ten minutes, leaving pools below their size; deleting and syncing carry on.
 - Channel order inside a category is left to Discord after the base channel moves; only newly created channels are positioned explicitly.
 
 ## Upgrading

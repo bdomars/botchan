@@ -19,6 +19,10 @@ from pydantic import (
 DEFAULT_RUNTIME_CONFIG_PATH = "botchan.config.json"
 # Discord rejects longer channel names.
 MAX_CHANNEL_NAME_LENGTH = 100
+# A short idle timeout turns everyone hopping in and out of a voice channel
+# into a channel created and deleted again, cluttering the channel list and
+# the audit log. Extras always wait at least this long before deletion.
+MIN_IDLE_SECONDS = 60
 
 
 def is_snowflake(value: str) -> bool:
@@ -91,7 +95,8 @@ class ChannelPoolConfig(BaseModel):
             base_name=self.base_name,
             min_channels=self.min_channels,
             max_channels=self.max_channels,
-            idle_seconds=self.idle_seconds,
+            # Configs saved before the floor existed still load; they just wait longer.
+            idle_seconds=max(self.idle_seconds, MIN_IDLE_SECONDS),
             base_channel_id=(
                 int(self.base_channel_id) if self.base_channel_id is not None else None
             ),

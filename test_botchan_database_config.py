@@ -129,6 +129,18 @@ class DatabaseConfigTests(unittest.TestCase):
 
         self.assertEqual(config.spec.channel_pools[0].base_channel_id, 223456789012345678)
 
+    def test_an_old_short_idle_timeout_still_loads_at_the_floor(self) -> None:
+        pool = {"base_name": "Silly Games", "min_channels": 1, "idle_seconds": 10}
+        config = parse_config_row(
+            {
+                "guild_id": "123456789012345678",
+                "revision": 1,
+                "document": {"guild_id": "123456789012345678", "channel_pools": [pool]},
+            }
+        )
+
+        self.assertEqual(config.spec.channel_pools[0].idle_seconds, 60)
+
     def test_rejects_two_pools_on_one_base_channel(self) -> None:
         pool = {"base_channel_id": "223456789012345678"}
         with self.assertRaises(ValueError):

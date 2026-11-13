@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import itertools
 import unittest
 from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import patch
 
-import discord
-
-from botchan.client import BotChan, ManagedGuild, ManagedPool
+from botchan.client import CREATE_RETRY_SECONDS, BotChan, ManagedGuild, ManagedPool
 from botchan.config import ChannelPoolSpec
 
 SPEC = ChannelPoolSpec(
@@ -44,7 +43,7 @@ class FakeVoiceChannel:
         # When set, every edit snaps bitrate back, standing in for a value
         # Discord clamps or silently refuses.
         self.clamp_bitrate_to: int | None = None
-        self.fail_next_edit: Exception | None = None
+        self.slow_next_edit = False
         self.edits = 0
 
     @property
@@ -52,9 +51,10 @@ class FakeVoiceChannel:
         return None if self.category is None else self.category.id
 
     async def edit(self, **settings: Any) -> FakeVoiceChannel:
-        if self.fail_next_edit is not None:
-            error, self.fail_next_edit = self.fail_next_edit, None
-            raise error
+        if self.slow_next_edit:
+            # Stands in for discord.py waiting out a long rate limit.
+            self.slow_next_edit = False
+            await asyncio.sleep(3600)
         self.edits += 1
         settings.pop("reason", None)
         for key, value in settings.items():
@@ -69,6 +69,8 @@ class FakeGuild:
         self.id = 42
         self.channels: list[FakeVoiceChannel] = []
         self.creates: list[tuple[str, dict[str, Any], str | None]] = []
+        self.create_attempts = 0
+        self.slow_next_create = False
 
     @property
     def voice_channels(self) -> list[FakeVoiceChannel]:
@@ -85,6 +87,10 @@ class FakeGuild:
     async def create_voice_channel(
         self, name: str, reason: str | None = None, **settings: Any
     ) -> FakeVoiceChannel:
+        self.create_attempts += 1
+        if self.slow_next_create:
+            self.slow_next_create = False
+            await asyncio.sleep(3600)
         self.creates.append((name, dict(settings), reason))
         channel = FakeVoiceChannel(name, self, **settings)
         self.channels.append(channel)
@@ -286,11 +292,14 @@ class ChannelSyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_rate_limited_rename_is_retried_on_a_later_pass(self) -> None:
         base, second, third = await self.seeded_pool()
-        third.fail_next_edit = discord.RateLimited(600.0)
+        third.slow_next_edit = True
         creates = len(self.guild.creates)
 
         base.name = "Raid Rooms"
-        with self.assertLogs("botchan", "WARNING"):
+        with (
+            patch("botchan.client.REQUEST_DEADLINE_SECONDS", 0.01),
+            self.assertLogs("botchan", "WARNING"),
+        ):
             await self.reconcile()
         self.assertEqual(second.name, "Raid Rooms #2")
         self.assertEqual(third.name, "Other Games #3")
@@ -300,6 +309,55 @@ class ChannelSyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(third.name, "Raid Rooms #3")
         self.assertEqual(len(self.guild.creates), creates)
+
+    async def test_a_create_held_back_pauses_creating_for_a_while(self) -> None:
+        self.guild.slow_next_create = True
+        clock = 1_000.0
+        self.bot._monotonic = lambda: clock
+
+        with (
+            patch("botchan.client.REQUEST_DEADLINE_SECONDS", 0.01),
+            self.assertLogs("botchan", "WARNING") as logs,
+        ):
+            await self.reconcile()
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("trying again in 10 minutes", logs.output[0])
+        self.assertNotIn("Traceback", logs.output[0])
+
+        # Not asked again while paused.
+        await self.reconcile()
+        await self.reconcile()
+        self.assertEqual(self.guild.create_attempts, 1)
+
+        clock += CREATE_RETRY_SECONDS
+        await self.reconcile()
+
+        self.assertEqual(
+            [channel.name for channel in self.guild.channels],
+            ["Other Games", "Other Games #2", "Other Games #3"],
+        )
+
+    async def test_a_paused_guild_still_syncs_settings(self) -> None:
+        base, second, _ = await self.seeded_pool()
+        self.guild.channels.remove(second)
+        self.guild.slow_next_create = True
+        with (
+            patch("botchan.client.REQUEST_DEADLINE_SECONDS", 0.01),
+            self.assertLogs("botchan", "WARNING"),
+        ):
+            await self.reconcile()
+
+        base.bitrate = 96000
+        await self.reconcile()
+
+        third = next(c for c in self.guild.channels if c.name == "Other Games #3")
+        self.assertEqual(third.bitrate, 96000)
+
+    def test_discord_py_never_refuses_requests_by_window_length(self) -> None:
+        # max_ratelimit_timeout makes discord.py refuse any request whose
+        # bucket resets later than the timeout, even with requests left.
+        # Channel creation resets daily, so it allowed one create per day.
+        self.assertIsNone(self.bot.http.max_ratelimit_timeout)
 
     async def test_a_pool_saved_by_name_finds_its_base_by_name(self) -> None:
         self.pool = ManagedPool(spec=SPEC)

@@ -19,7 +19,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import RequestResponseEndpoint
 
-from botchan.config import ChannelPoolConfig, GuildConfig
+from botchan.config import MIN_IDLE_SECONDS, ChannelPoolConfig, GuildConfig
 from botchan.reconciliation import pool_name_problems
 from botchan_api.database import create_database
 from botchan_api.discord_client import DiscordAPIError, DiscordClient
@@ -64,6 +64,8 @@ class ConfigWrite(BaseModel):
             raise ValueError("every channel pool needs a base_channel_id")
         if len(ids) != len(set(ids)):
             raise ValueError("a channel can be the base of only one pool")
+        if any(pool.idle_seconds < MIN_IDLE_SECONDS for pool in self.channel_pools):
+            raise ValueError(f"idle_seconds must be at least {MIN_IDLE_SECONDS}")
         return self
 
 

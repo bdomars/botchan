@@ -39,8 +39,8 @@ function pool(channelId) {
         base_channel_id: channelId,
         min_channels: "1",
         max_channels: "2",
-        idle_value: "0",
-        idle_unit: "seconds",
+        idle_value: "1",
+        idle_unit: "minutes",
     };
 }
 
@@ -75,6 +75,17 @@ test("the saved pool carries the channel id, not a name", () => {
         max_channels: 10,
         idle_seconds: 600,
     });
+});
+
+test("extras must wait at least a minute before they are removed", () => {
+    const draft = validDraft();
+    draft.channel_pools[0].idle_value = "59";
+    draft.channel_pools[0].idle_unit = "seconds";
+    assert.match(core.validateDraft(draft).errors.pools[0].idle_seconds, /at least a minute/);
+
+    draft.channel_pools[0].idle_value = "1";
+    draft.channel_pools[0].idle_unit = "minutes";
+    assert.equal(core.validateDraft(draft).valid, true);
 });
 
 test("a base channel deleted in Discord must be replaced", () => {
