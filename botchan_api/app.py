@@ -1,133 +1,73 @@
-import asyncio
-import json
 import logging
-import secrets
-import time
-from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
-from typing import Annotated, Any, Self
+from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Header, Query, Request
-from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.middleware.base import RequestResponseEndpoint
 
-from botchan.config import MIN_IDLE_SECONDS, ChannelPoolConfig, GuildConfig
-from botchan.reconciliation import pool_name_problems
+from botchan_api.common import (
+    APIError,
+    error,
+    install_common,
+    install_probes,
+    now,
+    security_compare,
+    session_dependency,
+)
+from botchan_api.configs import ConfigWrite, config_etag, config_response, save_config
 from botchan_api.database import create_database
 from botchan_api.discord_client import DiscordAPIError, DiscordClient
-from botchan_api.models import GuildConfigRow, GuildConfigVersion, OAuthSession
+from botchan_api.guilds import (
+    ADMINISTRATOR,
+    BOT_GUILD_CACHE_SECONDS,
+    BOT_PERMISSIONS,
+    CATEGORY_CHANNEL,
+    MANAGE_CHANNELS,
+    MANAGE_GUILD,
+    MANAGE_ROLES,
+    VOICE_CHANNEL,
+    TimedCache,
+    guild_voice_channels,
+    has_bot_permissions,
+    icon_url,
+    install_url,
+    valid_snowflake,
+    voice_channel_list,
+)
+from botchan_api.models import GuildConfigRow, OAuthSession
 from botchan_api.security import Security
 from botchan_api.settings import Settings
 
+# Re-exported for callers and tests that import them from here.
+__all__ = [
+    "ADMINISTRATOR",
+    "BOT_GUILD_CACHE_SECONDS",
+    "BOT_PERMISSIONS",
+    "CATEGORY_CHANNEL",
+    "MANAGE_CHANNELS",
+    "MANAGE_GUILD",
+    "MANAGE_ROLES",
+    "VOICE_CHANNEL",
+    "APIError",
+    "ConfigWrite",
+    "config_etag",
+    "create_app",
+    "has_bot_permissions",
+    "now",
+    "valid_snowflake",
+    "voice_channel_list",
+]
+
 SESSION_COOKIE = "botchan_session"
 OAUTH_STATE_COOKIE = "botchan_oauth_state"
-MANAGE_GUILD = 1 << 5
-ADMINISTRATOR = 1 << 3
-MANAGE_CHANNELS = 1 << 4
-# Copying permission overwrites from a pool's base channel to the rest of the
-# pool is a permission edit, which Discord gates behind Manage Roles.
-MANAGE_ROLES = 1 << 28
-BOT_PERMISSIONS = MANAGE_CHANNELS | MANAGE_ROLES
-BOT_GUILD_CACHE_SECONDS = 30
-# Discord channel types.
-VOICE_CHANNEL = 2
-CATEGORY_CHANNEL = 4
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 PROJECT_ROOT = WEB_ROOT.parent
 log = logging.getLogger("botchan.api")
-
-
-class APIError(Exception):
-    def __init__(self, status: int, code: str, message: str) -> None:
-        self.status = status
-        self.code = code
-        self.message = message
-
-
-class ConfigWrite(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    channel_pools: list[ChannelPoolConfig] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def unique_base_channels(self) -> Self:
-        # Names are filled in from Discord on save; the channel is the identity.
-        ids = [pool.base_channel_id for pool in self.channel_pools]
-        if any(channel_id is None for channel_id in ids):
-            raise ValueError("every channel pool needs a base_channel_id")
-        if len(ids) != len(set(ids)):
-            raise ValueError("a channel can be the base of only one pool")
-        if any(pool.idle_seconds < MIN_IDLE_SECONDS for pool in self.channel_pools):
-            raise ValueError(f"idle_seconds must be at least {MIN_IDLE_SECONDS}")
-        return self
-
-
-def now() -> datetime:
-    return datetime.now(UTC)
-
-
-def error(status: int, code: str, message: str) -> APIError:
-    return APIError(status, code, message)
-
-
-def config_etag(revision: int) -> str:
-    return f'"guild-config-{revision}"'
-
-
-def valid_snowflake(value: str) -> bool:
-    return value.isdigit() and value[0] != "0" and len(value) <= 20
-
-
-def voice_channel_list(channels: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A guild's voice channels in the order Discord's sidebar shows them."""
-    categories = {
-        str(channel["id"]): channel
-        for channel in channels
-        if channel.get("type") == CATEGORY_CHANNEL
-    }
-
-    def parent(channel: dict[str, Any]) -> dict[str, Any] | None:
-        return categories.get(str(channel.get("parent_id")))
-
-    def sort_key(channel: dict[str, Any]) -> tuple[int, int, int, int]:
-        category = parent(channel)
-        # Channels outside any category sit above every category.
-        return (
-            -1 if category is None else int(category.get("position", 0)),
-            0 if category is None else int(category["id"]),
-            int(channel.get("position", 0)),
-            int(channel["id"]),
-        )
-
-    voice = sorted(
-        (channel for channel in channels if channel.get("type") == VOICE_CHANNEL),
-        key=sort_key,
-    )
-    result = []
-    for channel in voice:
-        category = parent(channel)
-        result.append(
-            {
-                "id": str(channel["id"]),
-                "name": channel["name"],
-                "category": None if category is None else category["name"],
-            }
-        )
-    return result
-
-
-def has_bot_permissions(granted: int) -> bool:
-    """Whether a guild grants the bot everything it needs to manage pools."""
-    if granted & ADMINISTRATOR:
-        return True
-    return granted & BOT_PERMISSIONS == BOT_PERMISSIONS
 
 
 def create_app(
@@ -146,71 +86,12 @@ def create_app(
     app.state.security = security
     app.state.discord = discord
 
-    bot_guild_cache: dict[str, int] | None = None
-    bot_guild_cache_expires_at = 0.0
-    bot_guild_cache_lock = asyncio.Lock()
-
-    async def bot_guilds() -> dict[str, int]:
-        nonlocal bot_guild_cache, bot_guild_cache_expires_at
-        if bot_guild_cache is not None and time.monotonic() < bot_guild_cache_expires_at:
-            return bot_guild_cache
-        async with bot_guild_cache_lock:
-            if bot_guild_cache is not None and time.monotonic() < bot_guild_cache_expires_at:
-                return bot_guild_cache
-            guilds = await discord.bot_guilds()
-            bot_guild_cache = guilds
-            bot_guild_cache_expires_at = time.monotonic() + BOT_GUILD_CACHE_SECONDS
-            return guilds
-
-    @app.middleware("http")
-    async def security_headers(request: Request, call_next: RequestResponseEndpoint):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "same-origin"
-        if request.url.path.startswith(("/api/", "/auth/")):
-            response.headers["Cache-Control"] = "no-store"
-        return response
-
-    @app.exception_handler(APIError)
-    async def api_error_handler(_request: Request, exc: APIError) -> JSONResponse:
-        return JSONResponse(
-            status_code=exc.status,
-            content={"code": exc.code, "message": exc.message},
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def validation_error_handler(
-        _request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        return JSONResponse(
-            status_code=422,
-            content={
-                "code": "INVALID_REQUEST",
-                "message": "The request did not pass validation.",
-                "details": jsonable_encoder(exc.errors()),
-            },
-        )
-
-    async def db_session() -> AsyncIterator[AsyncSession]:
-        async with session_factory() as session:
-            yield session
+    install_common(app)
+    install_probes(app, session_factory, log)
+    bot_guilds: TimedCache[dict[str, int]] = TimedCache(lambda: discord.bot_guilds())
+    db_session = session_dependency(session_factory)
 
     DB = Annotated[AsyncSession, Depends(db_session)]
-
-    @app.get("/healthz", include_in_schema=False)
-    async def healthz() -> JSONResponse:
-        # Liveness only: the process is up and serving. Deliberately does not
-        # touch the database, so a database outage never restarts the pods.
-        return JSONResponse({"status": "ok"})
-
-    @app.get("/readyz", include_in_schema=False)
-    async def readyz(db: DB) -> JSONResponse:
-        try:
-            await db.execute(text("SELECT 1"))
-        except Exception:
-            log.exception("Readiness check failed")
-            return JSONResponse(status_code=503, content={"status": "no database"})
-        return JSONResponse({"status": "ok"})
 
     async def authenticated_session(request: Request, db: DB) -> OAuthSession:
         raw = request.cookies.get(SESSION_COOKIE)
@@ -285,28 +166,9 @@ def create_app(
         )
         if guild is None:
             raise error(403, "GUILD_ACCESS_DENIED", "You cannot manage this guild.")
-        if require_installed:
-            try:
-                installed = guild_id in await bot_guilds()
-            except DiscordAPIError as exc:
-                log.exception("Discord bot installation check failed")
-                raise error(
-                    503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked."
-                ) from exc
-            if not installed:
-                raise error(
-                    409, "BOT_NOT_INSTALLED", "Install BotChan before configuring this guild."
-                )
+        if require_installed and guild_id not in await bot_guilds.get():
+            raise error(409, "BOT_NOT_INSTALLED", "Install BotChan before configuring this guild.")
         return guild
-
-    async def guild_voice_channels(guild_id: str) -> list[dict[str, Any]]:
-        try:
-            return voice_channel_list(await discord.guild_channels(guild_id))
-        except DiscordAPIError as exc:
-            log.exception("Loading channels for guild %s failed", guild_id)
-            raise error(
-                503, "DISCORD_UNAVAILABLE", "The server's channels could not be loaded."
-            ) from exc
 
     def check_csrf(request: Request, oauth_session: OAuthSession) -> None:
         supplied = request.headers.get("X-CSRF-Token", "")
@@ -431,13 +293,7 @@ def create_app(
     @app.get("/api/guilds")
     async def guild_list(db: DB, oauth_session: AuthSession) -> dict[str, Any]:
         guilds = [g for g in await user_guilds(oauth_session, db, force=False) if manageable(g)]
-        try:
-            bot_permissions = await bot_guilds()
-        except DiscordAPIError as exc:
-            log.exception("Discord bot installation check failed")
-            raise error(
-                503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked."
-            ) from exc
+        bot_permissions = await bot_guilds.get()
         ids = [str(guild["id"]) for guild in guilds]
         revisions = {
             row.guild_id: row.revision
@@ -454,29 +310,16 @@ def create_app(
             # Re-authorizing an installed bot updates its permissions, so the
             # same install link doubles as the fix for a stale grant.
             needs_permissions = installed and not has_bot_permissions(granted)
-            install_query = urlencode(
-                {
-                    "client_id": settings.discord_client_id,
-                    "scope": "bot",
-                    "permissions": str(BOT_PERMISSIONS),
-                    "guild_id": guild_id,
-                    "disable_guild_select": "true",
-                }
-            )
             result.append(
                 {
                     "id": guild_id,
                     "name": guild["name"],
-                    "icon_url": (
-                        f"https://cdn.discordapp.com/icons/{guild_id}/{icon}.png?size=64"
-                        if icon
-                        else None
-                    ),
+                    "icon_url": icon_url(guild_id, icon),
                     "installed": installed,
                     "needs_permissions": needs_permissions,
                     "configured": guild_id in revisions,
                     "revision": revisions.get(guild_id),
-                    "install_url": f"https://discord.com/oauth2/authorize?{install_query}",
+                    "install_url": install_url(settings.discord_client_id, guild_id),
                 }
             )
         return {"guilds": result}
@@ -484,26 +327,12 @@ def create_app(
     @app.get("/api/guilds/{guild_id}/config")
     async def get_config(guild_id: str, db: DB, oauth_session: AuthSession) -> JSONResponse:
         await authorized_guild(guild_id, oauth_session, db, force=False, require_installed=False)
-        row = await db.get(GuildConfigRow, guild_id)
-        if row is None:
-            return JSONResponse(
-                {"guild_id": guild_id, "channel_pools": [], "revision": None, "updated_at": None}
-            )
-        response = JSONResponse(
-            {
-                "guild_id": guild_id,
-                "channel_pools": row.document["channel_pools"],
-                "revision": row.revision,
-                "updated_at": row.updated_at.isoformat(),
-            }
-        )
-        response.headers["ETag"] = config_etag(row.revision)
-        return response
+        return config_response(guild_id, await db.get(GuildConfigRow, guild_id))
 
     @app.get("/api/guilds/{guild_id}/channels")
     async def channel_list(guild_id: str, db: DB, oauth_session: AuthSession) -> dict[str, Any]:
         await authorized_guild(guild_id, oauth_session, db, force=False)
-        return {"channels": await guild_voice_channels(guild_id)}
+        return {"channels": await guild_voice_channels(discord, guild_id)}
 
     @app.put("/api/guilds/{guild_id}/config")
     async def put_config(
@@ -517,97 +346,16 @@ def create_app(
     ) -> JSONResponse:
         check_csrf(request, oauth_session)
         await authorized_guild(guild_id, oauth_session, db, force=True)
-        channel_names = {
-            channel["id"]: channel["name"] for channel in await guild_voice_channels(guild_id)
-        }
-        pools = []
-        for pool in body.channel_pools:
-            name = channel_names.get(pool.base_channel_id or "")
-            if name is None:
-                raise error(
-                    422,
-                    "BASE_CHANNEL_NOT_FOUND",
-                    "A pool's base channel is no longer a voice channel in this server. "
-                    "Pick another one.",
-                )
-            # The stored name is what the editor shows; the bot always uses the
-            # channel's current name.
-            pools.append(pool.model_copy(update={"base_name": name}))
-        problems = pool_name_problems([pool.to_spec() for pool in pools])
-        if problems:
-            raise error(422, "POOL_NAMES_CONFLICT", " ".join(problems))
-        try:
-            validated = GuildConfig.model_validate(
-                {"guild_id": int(guild_id), "channel_pools": [pool.model_dump() for pool in pools]}
-            )
-        except ValidationError as exc:
-            raise error(422, "INVALID_POOLS", str(exc)) from exc
-        await db.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:guild_id, 0))"),
-            {"guild_id": guild_id},
+        return await save_config(
+            db,
+            discord,
+            guild_id,
+            body,
+            editor_id=oauth_session.discord_user_id,
+            editor_name=oauth_session.global_name or oauth_session.username,
+            if_match=if_match,
+            if_none_match=if_none_match,
         )
-        row = await db.scalar(
-            select(GuildConfigRow).where(GuildConfigRow.guild_id == guild_id).with_for_update()
-        )
-        if row is None:
-            if if_none_match != "*":
-                if if_match is not None:
-                    raise error(412, "CONFIG_STALE", "The guild configuration has changed.")
-                raise error(428, "PRECONDITION_REQUIRED", "Reload before saving this guild.")
-            revision = 1
-        else:
-            if if_match is None and if_none_match is None:
-                raise error(428, "PRECONDITION_REQUIRED", "Reload before saving this guild.")
-            if if_match != config_etag(row.revision):
-                raise error(412, "CONFIG_STALE", "The guild configuration has changed.")
-            revision = row.revision + 1
-
-        timestamp = now()
-        document = {
-            "guild_id": guild_id,
-            "channel_pools": [pool.model_dump() for pool in validated.channel_pools],
-        }
-        editor_name = oauth_session.global_name or oauth_session.username
-        if row is None:
-            row = GuildConfigRow(
-                guild_id=guild_id,
-                document=document,
-                revision=revision,
-                editor_discord_user_id=oauth_session.discord_user_id,
-                updated_at=timestamp,
-            )
-            db.add(row)
-            await db.flush()
-        else:
-            row.document = document
-            row.revision = revision
-            row.editor_discord_user_id = oauth_session.discord_user_id
-            row.updated_at = timestamp
-        db.add(
-            GuildConfigVersion(
-                guild_id=guild_id,
-                revision=revision,
-                document=document,
-                editor_discord_user_id=oauth_session.discord_user_id,
-                editor_name=editor_name,
-                created_at=timestamp,
-            )
-        )
-        payload = json.dumps({"guild_id": guild_id, "revision": revision}, separators=(",", ":"))
-        await db.execute(
-            text("SELECT pg_notify('botchan_config_changed', :payload)"), {"payload": payload}
-        )
-        await db.commit()
-        response = JSONResponse(
-            {
-                "guild_id": guild_id,
-                "channel_pools": document["channel_pools"],
-                "revision": revision,
-                "updated_at": timestamp.isoformat(),
-            }
-        )
-        response.headers["ETag"] = config_etag(revision)
-        return response
 
     @app.get("/botchan.png", include_in_schema=False)
     async def logo() -> FileResponse:
@@ -615,7 +363,3 @@ def create_app(
 
     app.mount("/", StaticFiles(directory=WEB_ROOT, html=True), name="web")
     return app
-
-
-def security_compare(left: str, right: str) -> bool:
-    return secrets.compare_digest(left, right)

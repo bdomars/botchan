@@ -1,0 +1,28 @@
+# The operator-only admin API on its own hostname. Its endpoints still need a
+# Discord login by a granted operator; restricting the source addresses as
+# well keeps everyone else from even reaching the login page.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: botchan-admin
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    # ingress-nginx: only these client ranges may connect. Adjust or remove.
+    # nginx.ingress.kubernetes.io/whitelist-source-range: "203.0.113.0/24,2001:db8::/32"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - admin.botchan.example.com
+      secretName: botchan-admin-tls
+  rules:
+    - host: admin.botchan.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: botchan-admin
+                port:
+                  name: http

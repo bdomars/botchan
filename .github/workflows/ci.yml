@@ -149,12 +149,17 @@ jobs:
           kustomize edit set image \
             "${REGISTRY}/${IMAGE_NAME}:${TAG}" \
             "${REGISTRY}/${IMAGE_NAME}-api:${TAG}"
-          # The base manifests come from this repo too. Pin them to the same
-          # commit, so the cluster never runs new images on old manifests.
-          sed -i "s#\(github\.com/${IMAGE_NAME}//k8s/base?ref=\)[^[:space:]]*#\1${GITHUB_SHA}#" \
+          # The base and any components (such as k8s/components/admin) come
+          # from this repo too. Pin every one of them to the same commit, so
+          # the cluster never runs new images on old manifests.
+          sed -i "s#\(github\.com/${IMAGE_NAME}//k8s/[^?[:space:]]*?ref=\)[^[:space:]]*#\1${GITHUB_SHA}#g" \
             kustomization.yaml
           if ! grep -q "k8s/base?ref=${GITHUB_SHA}" kustomization.yaml; then
             echo "::error::Could not find the k8s/base resource to pin in kustomization.yaml"
+            exit 1
+          fi
+          if grep "github\.com/${IMAGE_NAME}//k8s/" kustomization.yaml | grep -v -q "ref=${GITHUB_SHA}"; then
+            echo "::error::A ${IMAGE_NAME} manifest reference was left unpinned in kustomization.yaml"
             exit 1
           fi
           git diff

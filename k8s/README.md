@@ -3,7 +3,8 @@
 A sample deployment to build your own on, not a turnkey install.
 
 - **`base/`** — the bot, the API, its Service, and a ConfigMap. Reference this from your own kustomization.
-- **`example/`** — a complete deployment built on the base: CloudNativePG, a generated secret, an Ingress. Copy it and edit.
+- **`components/admin/`** — the opt-in, operator-only admin API. See [The admin API](#the-admin-api).
+- **`example/`** — a complete deployment built on the base: CloudNativePG, a generated secret, Ingresses, and the admin component. Copy it and edit.
 
 The base deliberately has **no database, no Ingress, no Secret and no namespace**. Those belong to your kustomization.
 
@@ -113,6 +114,30 @@ The five `DB_*` variables are then unused, and can stay. The URL must use the `p
 | `DISCORD_REDIRECT_URI` | Must match the redirect URI registered with Discord |
 | `SECURE_COOKIES` | Keep `"true"` when served over HTTPS |
 | `LOG_LEVEL` | Bot log level |
+
+## The admin API
+
+The admin API lets operators see and edit every guild's configuration. It is a kustomize component, so it's absent unless you add it:
+
+```yaml
+components:
+  - github.com/bdomars/botchan//k8s/components/admin?ref=main
+```
+
+It runs the `botchan-api` image with a different command, as the `botchan-admin` Deployment and Service, using the same secrets. It runs no migrations; the API's init container owns the schema. It adds two settings to the ConfigMap, with localhost defaults to patch as `example/kustomization.yaml` does:
+
+| Key | Notes |
+| --- | --- |
+| `ADMIN_PUBLIC_BASE_URL` | Where the admin API is reached, on its own hostname |
+| `ADMIN_DISCORD_REDIRECT_URI` | Register this as an extra redirect URI in the Discord Developer Portal |
+
+Expose it with its own Ingress (`example/admin-ingress.yaml`), and restrict the source addresses there if you can. Then grant yourself access:
+
+```bash
+kubectl -n botchan exec deploy/botchan-admin -- python -m botchan_api.admin.cli grant <discord user id>
+```
+
+`revoke` removes an operator and ends their sessions immediately; `list` shows who has access.
 
 ## Images
 

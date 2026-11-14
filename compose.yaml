@@ -43,6 +43,23 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # The operator-only admin API. Nobody can log in until you grant someone:
+  #   docker compose run --rm --entrypoint python admin -m botchan_api.admin.cli grant <user id>
+  admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    entrypoint: ["uvicorn", "botchan_api.admin.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *api-environment
+      ADMIN_PUBLIC_BASE_URL: ${ADMIN_PUBLIC_BASE_URL:-http://localhost:8001}
+      ADMIN_DISCORD_REDIRECT_URI: ${ADMIN_DISCORD_REDIRECT_URI:-http://localhost:8001/auth/discord/callback}
+    ports:
+      - "8001:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   bot:
     build:
       context: .

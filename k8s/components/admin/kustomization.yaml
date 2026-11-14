@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# The operator-only admin API, opt-in. Add it to your kustomization with
+#
+#   components:
+#     - github.com/bdomars/botchan//k8s/components/admin?ref=main
+#
+# It runs from the botchan-api image with a different command, on its own
+# Service, and needs its own hostname and Discord redirect URI. Nobody can
+# log in until you grant someone operator access; see k8s/README.md.
+
+resources:
+  - admin-deployment.yaml
+  - admin-service.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: botchan
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: botchan-config
+    patch: |
+      - op: add
+        path: /data/ADMIN_PUBLIC_BASE_URL
+        value: "http://localhost:8001"
+      - op: add
+        path: /data/ADMIN_DISCORD_REDIRECT_URI
+        value: "http://localhost:8001/auth/discord/callback"

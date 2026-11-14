@@ -44,14 +44,14 @@ class DiscordClient:
 
         raise AssertionError("rate-limit retry loop did not return")
 
-    async def exchange_code(self, code: str) -> dict[str, Any]:
+    async def exchange_code(self, code: str, redirect_uri: str | None = None) -> dict[str, Any]:
         response = await self._request(
             "POST",
             f"{DISCORD_API}/oauth2/token",
             data={
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": self.settings.discord_redirect_uri,
+                "redirect_uri": redirect_uri or self.settings.discord_redirect_uri,
             },
             auth=(self.settings.discord_client_id, self.settings.discord_client_secret),
         )
@@ -101,9 +101,9 @@ class DiscordClient:
         )
         return await self._json(response)
 
-    async def bot_guilds(self) -> dict[str, int]:
-        """Map each guild the bot is in to the permissions it holds there."""
-        result: dict[str, int] = {}
+    async def bot_guild_list(self) -> list[dict[str, Any]]:
+        """Every guild the bot is in, as Discord describes them (id, name, icon, permissions)."""
+        result: list[dict[str, Any]] = []
         after: str | None = None
         while True:
             params = {"limit": 200}
@@ -116,12 +116,18 @@ class DiscordClient:
                 headers={"Authorization": f"Bot {self.settings.discord_bot_token}"},
             )
             page = await self._json(response)
-            for guild in page:
-                try:
-                    permissions = int(guild.get("permissions", 0))
-                except TypeError, ValueError:
-                    permissions = 0
-                result[str(guild["id"])] = permissions
+            result.extend(page)
             if len(page) < 200:
                 return result
             after = str(page[-1]["id"])
+
+    async def bot_guilds(self) -> dict[str, int]:
+        """Map each guild the bot is in to the permissions it holds there."""
+        result: dict[str, int] = {}
+        for guild in await self.bot_guild_list():
+            try:
+                permissions = int(guild.get("permissions", 0))
+            except TypeError, ValueError:
+                permissions = 0
+            result[str(guild["id"])] = permissions
+        return result

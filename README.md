@@ -180,6 +180,41 @@ Configuration saves use optimistic ETags and emit a PostgreSQL notification on
 the source of truth; notifications are only reload hints and are not a durable queue.
 The bot loads a complete snapshot at startup and after listener reconnections.
 
+## Admin API
+
+A second, operator-only app, `botchan_api.admin.main:app`, lets the people who run
+a BotChan instance see and edit every guild's configuration, including guilds they
+are not members of and configs left behind after the bot was removed. It ships in
+the same image as the configuration API but runs as its own process on its own host.
+
+- Operators log in with Discord (identity only; no Discord token is kept). Only
+  users in the `operators` table get a session, and that is checked again on every
+  request.
+- Nobody is an operator until you grant it:
+
+  ```bash
+  uv run python -m botchan_api.admin.cli grant <discord user id> --note "me"
+  uv run python -m botchan_api.admin.cli list
+  uv run python -m botchan_api.admin.cli revoke <discord user id>
+  ```
+
+- Saves made here are recorded in the guild's history with `as_operator` set.
+- Endpoints mirror the configuration API (`/api/session`, `/api/guilds`,
+  `/api/guilds/{id}/config`, `/api/guilds/{id}/channels`), plus
+  `/api/guilds/{id}/versions[/{revision}]` for history and rollback.
+
+It needs the API's environment plus its own URLs, and the redirect URI must also be
+registered for the Discord application:
+
+```text
+ADMIN_PUBLIC_BASE_URL=http://localhost:8001
+ADMIN_DISCORD_REDIRECT_URI=http://localhost:8001/auth/discord/callback
+ADMIN_SESSION_HOURS=12   # optional
+```
+
+`docker compose up` serves it on port 8001. Run the CLI there with
+`docker compose run --rm --entrypoint python admin -m botchan_api.admin.cli ...`.
+
 ## Kubernetes
 
 `k8s/base` holds a sample deployment to reference from your own kustomization,

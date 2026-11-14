@@ -12,6 +12,12 @@ resources:
   - ../base
   - cnpg-cluster.yaml
   - ingress.yaml
+  - admin-ingress.yaml
+
+# The operator-only admin API. Leave this out to run without it.
+components:
+  #   - github.com/bdomars/botchan//k8s/components/admin?ref=main
+  - ../components/admin
 
 # Creates botchan-discord from a local env file. Kustomize appends a hash to
 # the name and rewrites the references in the base, so editing a value rolls
@@ -33,6 +39,12 @@ patches:
       - op: replace
         path: /data/DISCORD_REDIRECT_URI
         value: https://botchan.example.com/auth/discord/callback
+      - op: replace
+        path: /data/ADMIN_PUBLIC_BASE_URL
+        value: https://admin.botchan.example.com
+      - op: replace
+        path: /data/ADMIN_DISCORD_REDIRECT_URI
+        value: https://admin.botchan.example.com/auth/discord/callback
 
 images:
   - name: ghcr.io/bdomars/botchan

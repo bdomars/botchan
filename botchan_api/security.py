@@ -8,8 +8,12 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 
 class Security:
-    def __init__(self, session_secret: str, encryption_key: str) -> None:
-        self._signer = URLSafeTimedSerializer(session_secret, salt="discord-oauth-state")
+    def __init__(
+        self, session_secret: str, encryption_key: str, state_salt: str = "discord-oauth-state"
+    ) -> None:
+        # Each app signs OAuth state with its own salt, so one app's state
+        # cookie is never accepted by the other's callback.
+        self._signer = URLSafeTimedSerializer(session_secret, salt=state_salt)
         self._cipher = Fernet(encryption_key.encode())
 
     @staticmethod
