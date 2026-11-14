@@ -48,10 +48,6 @@ button {
     color: inherit;
 }
 
-[v-cloak] {
-    display: none;
-}
-
 .user-chip {
     display: inline-flex;
     align-items: center;

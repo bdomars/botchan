@@ -1,3 +1,18 @@
+# The two frontends build separately, each from its own lockfile.
+FROM node:24-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web ./
+RUN npm run build
+
+FROM node:24-alpine AS web-admin
+WORKDIR /web_admin
+COPY web_admin/package.json web_admin/package-lock.json ./
+RUN npm ci
+COPY web_admin ./
+RUN npm run build
+
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS builder
 
 WORKDIR /app
@@ -30,7 +45,7 @@ COPY alembic.ini botchan-192.png LICENSE ./
 COPY botchan ./botchan
 COPY migrations ./migrations
 COPY botchan_api ./botchan_api
-COPY web ./web
-COPY web_admin ./web_admin
+COPY --from=web /web/dist ./web/dist
+COPY --from=web-admin /web_admin/dist ./web_admin/dist
 USER 10001:10001
 ENTRYPOINT ["uvicorn", "botchan_api.main:app", "--host", "0.0.0.0", "--port", "8000"]

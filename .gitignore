@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Frontends (web/, web_admin/): dependencies; the builds land in dist/, ignored above
+node_modules/

@@ -1,10 +1,10 @@
-"use strict";
+import assert from "node:assert/strict";
+import { test } from "vitest";
+import * as core from "./core";
+import type { Draft } from "./core";
+import type { Channel } from "./types";
 
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const core = require("./config-core.js");
-
-function validDraft() {
+function validDraft(): Draft {
     return {
         guild_id: "123456789012345678",
         channel_pools: [
@@ -27,20 +27,20 @@ test("validates and serializes a guild snowflake as an exact string", () => {
     assert.equal(json.split("\n")[1], '  "guild_id": "123456789012345678",');
 });
 
-const CHANNELS = [
+const CHANNELS: Channel[] = [
     { id: "223456789012345678", name: "Other Games", category: "Gaming" },
     { id: "223456789012345679", name: "Other Games #2", category: "Gaming" },
     { id: "223456789012345680", name: "Raid Rooms", category: "Gaming" },
     { id: "223456789012345681", name: "AFK", category: null },
 ];
 
-function pool(channelId) {
+function pool(channelId: string) {
     return {
         base_channel_id: channelId,
         min_channels: "1",
         max_channels: "2",
         idle_value: "1",
-        idle_unit: "minutes",
+        idle_unit: "minutes" as const,
     };
 }
 
@@ -69,7 +69,7 @@ test("the saved pool carries the channel id, not a name", () => {
     const result = core.validateDraft(validDraft(), CHANNELS);
 
     assert.equal(result.valid, true);
-    assert.deepEqual(result.value.channel_pools[0], {
+    assert.deepEqual(result.value?.channel_pools[0], {
         base_channel_id: "223456789012345678",
         min_channels: 3,
         max_channels: 10,
@@ -105,19 +105,19 @@ test("a base channel cannot be another pool's extra", () => {
 
     assert.match(result.errors.pools[1].base_channel_id, /extra channel of the Other Games pool/);
     assert.equal(
-        core.channelUnavailableReason(CHANNELS[1], draft.channel_pools, 1, CHANNELS),
+        core.channelUnavailableReason(CHANNELS[1]!, draft.channel_pools, 1, CHANNELS),
         "an extra of the Other Games pool",
     );
     assert.equal(
-        core.channelUnavailableReason(CHANNELS[0], draft.channel_pools, 1, CHANNELS),
+        core.channelUnavailableReason(CHANNELS[0]!, draft.channel_pools, 1, CHANNELS),
         "used by another pool",
     );
-    assert.equal(core.channelUnavailableReason(CHANNELS[2], draft.channel_pools, 1, CHANNELS), "");
+    assert.equal(core.channelUnavailableReason(CHANNELS[2]!, draft.channel_pools, 1, CHANNELS), "");
 });
 
 test("names that would pass Discord's limit are rejected, counting emoji once", () => {
     const longName = "🎮" + "x".repeat(96);
-    const channels = [{ id: "223456789012345678", name: longName, category: null }];
+    const channels: Channel[] = [{ id: "223456789012345678", name: longName, category: null }];
     const draft = validDraft();
 
     draft.channel_pools[0].max_channels = "9";
@@ -128,7 +128,7 @@ test("names that would pass Discord's limit are rejected, counting emoji once", 
 });
 
 test("pools saved by name adopt the one channel with that name", () => {
-    const draft = {
+    const draft: Draft = {
         guild_id: "123456789012345678",
         channel_pools: [
             core.poolToDraft({ base_name: "Raid Rooms", min_channels: 1, max_channels: 3, idle_seconds: 60 }),
@@ -161,7 +161,7 @@ test("new guilds start empty and draft fingerprints ignore client ids", () => {
     assert.deepEqual(core.defaultDraft(), { guild_id: "", channel_pools: [] });
     const first = validDraft();
     const second = structuredClone(first);
-    first.channel_pools[0].client_id = 1;
-    second.channel_pools[0].client_id = 99;
+    Object.assign(first.channel_pools[0], { client_id: 1 });
+    Object.assign(second.channel_pools[0], { client_id: 99 });
     assert.equal(core.draftFingerprint(first), core.draftFingerprint(second));
 });

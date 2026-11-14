@@ -1,29 +1,33 @@
-"use strict";
+import assert from "node:assert/strict";
+import { test } from "vitest";
+import * as core from "./core";
+import type { ParseResult } from "./core";
 
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const core = require("./admin-core.js");
+// The error of a parse that is expected to fail.
+function parseError(result: ParseResult): string {
+    assert.equal(result.ok, false);
+    return result.ok ? "" : result.error;
+}
 
 const GUILD = "123456789012345678";
 
-test("routes round-trip through the hash", () => {
-    const routes = [
-        { name: "overview" },
-        { name: "guild", guildId: GUILD },
-        { name: "guilds", q: "odl", status: "orphaned", offset: 50 },
-        { name: "guilds", q: "", status: "all", offset: 0 },
+test("guild list filters round-trip through the query", () => {
+    const filters: core.GuildFilters[] = [
+        { q: "odl", status: "orphaned", offset: 50 },
+        { q: "", status: "all", offset: 0 },
     ];
-    for (const route of routes) {
-        assert.deepEqual(core.parseRoute(core.buildHash(route)), route);
+    for (const value of filters) {
+        assert.deepEqual(core.parseGuildFilters(core.guildFiltersQuery(value)), value);
     }
+    assert.deepEqual(core.guildFiltersQuery({ q: "", status: "all", offset: 0 }), {});
 });
 
-test("unknown and malformed routes fall back safely", () => {
-    assert.deepEqual(core.parseRoute(""), { name: "overview" });
-    assert.deepEqual(core.parseRoute("#/nope"), { name: "overview" });
-    assert.deepEqual(core.parseRoute("#/guilds/not-an-id"), { name: "overview" });
-    assert.deepEqual(core.parseRoute("#/guilds?status=bogus&offset=-5"), {
-        name: "guilds", q: "", status: "all", offset: 0,
+test("malformed filters fall back to their defaults", () => {
+    assert.deepEqual(core.parseGuildFilters({ status: "bogus", offset: "-5" }), {
+        q: "", status: "all", offset: 0,
+    });
+    assert.deepEqual(core.parseGuildFilters({ q: ["first", "second"], status: null }), {
+        q: "first", status: "all", offset: 0,
     });
 });
 
@@ -44,20 +48,19 @@ test("the editor text is the PUT body and parses back", () => {
 
 test("pool keys are shown in a fixed order, unknown keys last", () => {
     const text = core.formatBody([{ idle_seconds: 60, extra: true, base_name: "Games", max_channels: 5, min_channels: 1, base_channel_id: "2" }]);
-    const keys = Object.keys(JSON.parse(text).channel_pools[0]);
+    const keys = Object.keys(JSON.parse(text).channel_pools[0] as object);
     assert.deepEqual(keys, ["base_channel_id", "base_name", "min_channels", "max_channels", "idle_seconds", "extra"]);
 });
 
 test("parse errors name the line and column", () => {
     const result = core.parseBody('{\n  "channel_pools": [\n    {,}\n  ]\n}');
-    assert.equal(result.ok, false);
-    assert.match(result.error, /line 3, column 6/);
+    assert.match(parseError(result), /line 3, column 6/);
 });
 
 test("the body must be an object holding only a channel_pools array", () => {
-    assert.match(core.parseBody("[]").error, /Expected an object/);
-    assert.match(core.parseBody('{"channel_pools": {}}').error, /must be an array/);
-    assert.match(core.parseBody('{"channel_pools": [], "guild_id": "1"}').error, /Unexpected key: guild_id/);
+    assert.match(parseError(core.parseBody("[]")), /Expected an object/);
+    assert.match(parseError(core.parseBody('{"channel_pools": {}}')), /must be an array/);
+    assert.match(parseError(core.parseBody('{"channel_pools": [], "guild_id": "1"}')), /Unexpected key: guild_id/);
 });
 
 test("line diff marks removed and added lines", () => {

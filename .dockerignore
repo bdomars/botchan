@@ -9,3 +9,6 @@ __pycache__
 env.fish
 env.sh
 botchan.config.json
+**/node_modules
+web/dist
+web_admin/dist

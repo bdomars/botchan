@@ -10,7 +10,7 @@ searched and paged on the server, so the frontend never needs every guild at
 once; today the guild list comes from Discord, and a table maintained by the
 bot can replace it later without changing the API.
 
-The operator frontend in ``web_admin/`` is served from ``/``.
+The operator frontend, built from ``web_admin/`` into ``web_admin/dist/``, is served from ``/``.
 """
 
 import logging
@@ -60,7 +60,8 @@ RECENT_CHANGES = 15
 # views don't need it fresher than this.
 ADMIN_GUILD_CACHE_SECONDS = 120
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-ADMIN_WEB_ROOT = PROJECT_ROOT / "web_admin"
+# The console's production build: `npm run build` in web_admin/ writes it.
+ADMIN_WEB_ROOT = PROJECT_ROOT / "web_admin" / "dist"
 log = logging.getLogger("botchan.admin")
 
 
@@ -513,5 +514,10 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
         return FileResponse(PROJECT_ROOT / "botchan-192.png")
 
     # Last, so the API and auth routes above take precedence.
-    app.mount("/", StaticFiles(directory=ADMIN_WEB_ROOT, html=True), name="admin-web")
+    # check_dir=False, as in botchan_api/app.py: the API starts without a build.
+    app.mount(
+        "/",
+        StaticFiles(directory=ADMIN_WEB_ROOT, html=True, check_dir=False),
+        name="admin-web",
+    )
     return app

@@ -164,9 +164,10 @@ For local development, export the secrets above and run:
 docker compose up --build
 ```
 
-Or apply migrations and launch the API directly:
+Or build the editor, apply migrations and launch the API directly:
 
 ```bash
+(cd web && npm ci && npm run build)
 uv run alembic upgrade head
 uv run uvicorn botchan_api.main:app --reload
 ```
@@ -199,7 +200,7 @@ the same image as the configuration API but runs as its own process on its own h
   ```
 
 - Saves made here are recorded in the guild's history with `as_operator` set.
-- It serves an operator frontend at `/` (from `web_admin/`): an overview with
+- It serves an operator frontend at `/` (built from `web_admin/`): an overview with
   install and config counts plus recent changes across all guilds, a guild search
   (by name or ID prefix, paged on the server), and a page per guild with the config
   as read-only JSON that you switch to editing, its voice channel IDs, and every
@@ -257,8 +258,44 @@ Run checks:
 uv run ty check
 uv run python -m compileall -q botchan botchan_api tests
 uv run python -m unittest -v
-node --test web/test_config_core.js
+(cd web && npm run type-check && npm test)
+(cd web_admin && npm run type-check && npm test)
 ```
+
+### Frontends
+
+The guild editor (`web/`) and the operator console (`web_admin/`) are two
+separate Vue 3 + TypeScript projects built with Vite. Each has its own
+`package.json` and dependencies: the editor aims to be easy for server admins,
+while the console is a dense tool for operators, so they are free to diverge.
+
+The API serves each app's production build from its `dist/` folder (the Docker
+image builds them for you). Outside Docker, build them before starting the API:
+
+```bash
+cd web && npm ci && npm run build
+```
+
+The API starts without a build, but then its page fails with a missing
+directory error.
+
+While working on a frontend, rebuild on every change and reload the page:
+
+```bash
+cd web && npm run build -- --watch      # with uvicorn botchan_api.main:app on :8000
+cd web_admin && npm run build -- --watch  # with the admin app on :8001
+```
+
+`npm run dev` starts Vite's dev server instead (http://localhost:5173), with hot
+reloading. It proxies `/api` and `/auth` to the API. Discord still sends you back
+to the API's own address after logging in, but cookies are not tied to a port,
+so once logged in, open the dev server's address again and the session carries
+over (with `SECURE_COOKIES=false`, as plain-HTTP localhost needs).
+
+Each app keeps its pure logic in `src/core.ts` with Vitest tests in
+`src/core.test.ts`, its API calls in `src/api.ts` and its UI in `src/components/`.
+The console routes with vue-router on hash history (`#/guilds/<id>`): the route
+table is in `web_admin/src/routes.ts`, and the views load lazily.
 
 ## Important Limitations
 

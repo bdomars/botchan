@@ -65,8 +65,9 @@ __all__ = [
 
 SESSION_COOKIE = "botchan_session"
 OAUTH_STATE_COOKIE = "botchan_oauth_state"
-WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
-PROJECT_ROOT = WEB_ROOT.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# The editor's production build: `npm run build` in web/ writes it.
+WEB_ROOT = PROJECT_ROOT / "web" / "dist"
 log = logging.getLogger("botchan.api")
 
 
@@ -362,5 +363,7 @@ def create_app(
     async def logo() -> FileResponse:
         return FileResponse(PROJECT_ROOT / "botchan-192.png")
 
-    app.mount("/", StaticFiles(directory=WEB_ROOT, html=True), name="web")
+    # check_dir=False lets the API start (and its tests run) before the editor
+    # is built; requests for the editor then fail loudly instead.
+    app.mount("/", StaticFiles(directory=WEB_ROOT, html=True, check_dir=False), name="web")
     return app

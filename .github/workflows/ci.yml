@@ -47,12 +47,26 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version-file: .python-version
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            web_admin/package-lock.json
+      # Each frontend is its own project. They build before the Python tests,
+      # which check that the API serves the built pages.
+      - name: Editor frontend (web/)
+        working-directory: web
+        run: npm ci && npm run type-check && npm test && npm run build
+      - name: Admin frontend (web_admin/)
+        working-directory: web_admin
+        run: npm ci && npm run type-check && npm test && npm run build
       - run: uv sync --frozen
       - run: uv run alembic upgrade head
       - run: uv run ty check
       - run: uv run python -m compileall -q botchan botchan_api tests
       - run: uv run python -m unittest -v
-      - run: node --test web/test_config_core.js web_admin/test_admin_core.js
 
   publish:
     needs: test

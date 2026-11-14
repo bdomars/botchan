@@ -1,6 +1,7 @@
 import contextlib
 import io
 import os
+import re
 import unittest
 from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
@@ -465,12 +466,16 @@ class AdminAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 401)
 
     async def test_the_frontend_is_served_without_shadowing_the_api(self) -> None:
+        # Needs the built frontend: run `npm run build` in web_admin/ first.
         page = await self.client.get("/")
-        script = await self.client.get("/admin-core.js")
+        bundle = re.search(r'src="(/assets/[^"]+\.js)"', page.text)
         api = await self.client.get("/api/guilds")
 
         self.assertEqual(page.status_code, 200)
         self.assertIn("<title>BotChan Admin</title>", page.text)
+        if bundle is None:
+            self.fail("index.html does not load the built bundle")
+        script = await self.client.get(bundle.group(1))
         self.assertEqual(script.status_code, 200)
         self.assertEqual(api.status_code, 401)
         self.assertEqual(api.json()["code"], "AUTHENTICATION_REQUIRED")
