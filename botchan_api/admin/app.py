@@ -508,9 +508,9 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
             "created_at": version.created_at.isoformat(),
         }
 
-    @app.get("/botchan.png", include_in_schema=False)
+    @app.get("/botchan-192.png", include_in_schema=False)
     async def logo() -> FileResponse:
-        return FileResponse(PROJECT_ROOT / "botchan.png")
+        return FileResponse(PROJECT_ROOT / "botchan-192.png")
 
     # Last, so the API and auth routes above take precedence.
     app.mount("/", StaticFiles(directory=ADMIN_WEB_ROOT, html=True), name="admin-web")

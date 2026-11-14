@@ -357,9 +357,10 @@ def create_app(
             if_none_match=if_none_match,
         )
 
-    @app.get("/botchan.png", include_in_schema=False)
+    # A small copy of botchan.png (1024 px, 2 MB), which stays the source image.
+    @app.get("/botchan-192.png", include_in_schema=False)
     async def logo() -> FileResponse:
-        return FileResponse(PROJECT_ROOT / "botchan.png")
+        return FileResponse(PROJECT_ROOT / "botchan-192.png")
 
     app.mount("/", StaticFiles(directory=WEB_ROOT, html=True), name="web")
     return app
