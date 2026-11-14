@@ -54,7 +54,6 @@ const { state, viewing, showDiff, viewingText, viewingDiff, loadVersions, viewRe
                                         <div class="actions">
                                             <label class="toggle"><input v-model="showDiff" type="checkbox"> diff against current</label>
                                             <button type="button" class="button" @click="copyText(viewingText)">Copy</button>
-                                            <button type="button" class="button" @click="viewing = null">Close</button>
                                         </div>
                                     </div>
                                     <pre v-if="!showDiff" class="json">{{ viewingText }}</pre>
