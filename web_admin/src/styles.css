@@ -273,7 +273,12 @@ pre.json { max-height: 520px; }
 .diff span { display: block; }
 .diff .add { background: var(--add-bg); }
 .diff .del { background: var(--del-bg); }
-.viewer { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+/* A revision opens in a row under its own row. The table may be wider than
+   the panel, so the viewer is sized to the visible width and stays put when
+   the table scrolls sideways. */
+.scroll { container-type: inline-size; }
+.grid tr.viewer-row > td { padding: 4px 0 14px; white-space: normal; }
+.viewer { position: sticky; left: 0; width: 100cqw; }
 .error { color: var(--danger); white-space: pre-line; margin: 8px 0 0; }
 .hint { margin: 8px 0 0; font-size: 12.5px; }
 
