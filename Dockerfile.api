@@ -31,5 +31,6 @@ COPY botchan ./botchan
 COPY migrations ./migrations
 COPY botchan_api ./botchan_api
 COPY web ./web
+COPY web_admin ./web_admin
 USER 10001:10001
 ENTRYPOINT ["uvicorn", "botchan_api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -106,7 +106,8 @@ class DiscordClient:
         result: list[dict[str, Any]] = []
         after: str | None = None
         while True:
-            params = {"limit": 200}
+            # with_counts adds approximate_member_count to every guild.
+            params: dict[str, Any] = {"limit": 200, "with_counts": "true"}
             if after is not None:
                 params["after"] = after
             response = await self._request(

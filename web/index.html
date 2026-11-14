@@ -140,9 +140,9 @@
                         class="panel install-panel"
                     >
                         <div>
-                            <p class="eyebrow">Permissions out of date</p>
-                            <h2>Update BotChan's permissions</h2>
-                            <p>BotChan now needs Manage Roles as well as Manage Channels, so it can copy permissions from a pool's base channel to the rest of the pool. Pools keep working without it, but permission changes will not be carried across.</p>
+                            <p class="eyebrow">Missing permission</p>
+                            <h2>BotChan is missing a permission</h2>
+                            <p>BotChan needs Manage Roles as well as Manage Channels, so it can copy permissions from a pool's base channel to the rest of the pool. Without it, changes to the base channel's permissions won't be copied to the rest of the pool, and new channels can't be created if the base channel uses permissions BotChan doesn't have.</p>
                         </div>
                         <a class="button button-primary" :href="selectedGuild.install_url">Update permissions</a>
                     </article>

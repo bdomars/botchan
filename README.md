@@ -199,9 +199,14 @@ the same image as the configuration API but runs as its own process on its own h
   ```
 
 - Saves made here are recorded in the guild's history with `as_operator` set.
-- Endpoints mirror the configuration API (`/api/session`, `/api/guilds`,
-  `/api/guilds/{id}/config`, `/api/guilds/{id}/channels`), plus
-  `/api/guilds/{id}/versions[/{revision}]` for history and rollback.
+- It serves an operator frontend at `/` (from `web_admin/`): an overview with
+  install and config counts plus recent changes across all guilds, a guild search
+  (by name or ID prefix, paged on the server), and a page per guild with the config
+  as read-only JSON that you switch to editing, its voice channel IDs, and every
+  revision with view, diff and roll back.
+- API: `/api/stats`, `/api/guilds?q=&status=&limit=&offset=`, `/api/guilds/{id}`,
+  `/api/guilds/{id}/config` (GET/PUT), `/api/guilds/{id}/channels` and
+  `/api/guilds/{id}/versions[/{revision}]`.
 
 It needs the API's environment plus its own URLs, and the redirect URI must also be
 registered for the Discord application:

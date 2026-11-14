@@ -67,8 +67,15 @@ class AdminAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "name": "Zebra Guild",
                         "icon": "abc",
                         "permissions": str(BOT_PERMISSIONS),
+                        "approximate_member_count": 40,
                     },
-                    {"id": OTHER_GUILD, "name": "alpha guild", "icon": None, "permissions": "0"},
+                    {
+                        "id": OTHER_GUILD,
+                        "name": "alpha guild",
+                        "icon": None,
+                        "permissions": "0",
+                        "approximate_member_count": 2,
+                    },
                 ]
 
             async def guild_channels(_self, _guild_id):
@@ -270,6 +277,7 @@ class AdminAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([v["revision"] for v in versions["versions"]], [2, 1])
         self.assertTrue(all(v["as_operator"] for v in versions["versions"]))
         self.assertEqual(versions["versions"][0]["editor"]["name"], "The Operator")
+        self.assertEqual(versions["versions"][0]["pool_count"], 1)
         older = (
             await self.client.get(
                 f"/api/guilds/{INSTALLED_GUILD}/versions", params={"before": 2, "limit": 1}
@@ -336,6 +344,136 @@ class AdminAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         # A copy of the old cookie is worthless once the session row is gone.
         self.client.cookies.set("botchan_admin_session", raw_session)
         self.assertEqual((await self.client.get("/api/guilds")).status_code, 401)
+
+    async def add_orphaned_config(self) -> None:
+        from botchan_api.common import now
+        from botchan_api.models import GuildConfigRow
+
+        async with self.session_factory() as db:
+            db.add(
+                GuildConfigRow(
+                    guild_id=ORPHANED_GUILD,
+                    document={"guild_id": ORPHANED_GUILD, "channel_pools": []},
+                    revision=4,
+                    editor_discord_user_id=STRANGER_ID,
+                    updated_at=now(),
+                )
+            )
+            await db.commit()
+
+    async def guild_ids(self, **params) -> list[str]:
+        response = await self.client.get("/api/guilds", params=params)
+        self.assertEqual(response.status_code, 200, response.text)
+        return [guild["id"] for guild in response.json()["guilds"]]
+
+    async def test_guild_search_matches_names_and_id_prefixes(self) -> None:
+        await self.login_as_operator()
+        await self.add_orphaned_config()
+
+        self.assertEqual(await self.guild_ids(q="ZEBRA"), [INSTALLED_GUILD])
+        self.assertEqual(await self.guild_ids(q="guild"), [OTHER_GUILD, INSTALLED_GUILD])
+        # An ID prefix matches every guild sharing it, orphaned ones included.
+        self.assertEqual(
+            await self.guild_ids(q="1234567890123456"),
+            [OTHER_GUILD, INSTALLED_GUILD, ORPHANED_GUILD],
+        )
+        self.assertEqual(await self.guild_ids(q=ORPHANED_GUILD), [ORPHANED_GUILD])
+        self.assertEqual(await self.guild_ids(q="nothing like it"), [])
+
+    async def test_guild_list_filters_by_status(self) -> None:
+        csrf = await self.login_as_operator()
+        await self.add_orphaned_config()
+        await self.client.put(
+            f"/api/guilds/{INSTALLED_GUILD}/config",
+            json=POOLS,
+            headers={"X-CSRF-Token": csrf, "If-None-Match": "*"},
+        )
+
+        self.assertEqual(await self.guild_ids(status="configured"), [INSTALLED_GUILD])
+        self.assertEqual(await self.guild_ids(status="unconfigured"), [OTHER_GUILD])
+        self.assertEqual(await self.guild_ids(status="needs_permissions"), [OTHER_GUILD])
+        self.assertEqual(await self.guild_ids(status="orphaned"), [ORPHANED_GUILD])
+        bad = await self.client.get("/api/guilds", params={"status": "bogus"})
+        self.assertEqual(bad.status_code, 422)
+
+    async def test_guild_list_pages(self) -> None:
+        await self.login_as_operator()
+        await self.add_orphaned_config()
+
+        first = (await self.client.get("/api/guilds", params={"limit": 2})).json()
+        rest = (await self.client.get("/api/guilds", params={"limit": 2, "offset": 2})).json()
+
+        self.assertEqual((first["total"], first["limit"], first["offset"]), (3, 2, 0))
+        self.assertEqual([g["id"] for g in first["guilds"]], [OTHER_GUILD, INSTALLED_GUILD])
+        self.assertEqual([g["id"] for g in rest["guilds"]], [ORPHANED_GUILD])
+        self.assertEqual(first["guilds"][1]["member_count"], 40)
+        too_big = await self.client.get("/api/guilds", params={"limit": 201})
+        self.assertEqual(too_big.status_code, 422)
+
+    async def test_guild_detail(self) -> None:
+        await self.login_as_operator()
+        await self.add_orphaned_config()
+
+        installed = await self.client.get(f"/api/guilds/{INSTALLED_GUILD}")
+        orphaned = await self.client.get(f"/api/guilds/{ORPHANED_GUILD}")
+        unknown = await self.client.get("/api/guilds/123456789012345699")
+        malformed = await self.client.get("/api/guilds/nope")
+
+        self.assertEqual(installed.json()["name"], "Zebra Guild")
+        self.assertFalse(installed.json()["configured"])
+        self.assertEqual(
+            orphaned.json(),
+            orphaned.json() | {"installed": False, "configured": True, "revision": 4},
+        )
+        self.assertEqual(unknown.status_code, 404)
+        self.assertEqual(malformed.status_code, 404)
+
+    async def test_stats_summarise_guilds_pools_and_changes(self) -> None:
+        csrf = await self.login_as_operator()
+        await self.add_orphaned_config()
+        await self.client.put(
+            f"/api/guilds/{INSTALLED_GUILD}/config",
+            json=POOLS,
+            headers={"X-CSRF-Token": csrf, "If-None-Match": "*"},
+        )
+
+        stats = (await self.client.get("/api/stats")).json()
+
+        self.assertEqual(
+            stats["guilds"],
+            {
+                "installed": 2,
+                "configured": 1,
+                "unconfigured": 1,
+                "needs_permissions": 1,
+                "orphaned": 1,
+                "members": 42,
+            },
+        )
+        self.assertEqual(stats["pools"], 1)
+        self.assertEqual(stats["revisions"], {"total": 1, "by_operator": 1, "last_7_days": 1})
+        self.assertEqual(stats["operators"], 1)
+        change = stats["recent_changes"][0]
+        self.assertEqual(
+            (change["guild_id"], change["guild_name"], change["revision"], change["as_operator"]),
+            (INSTALLED_GUILD, "Zebra Guild", 1, True),
+        )
+
+    async def test_stats_need_an_operator(self) -> None:
+        response = await self.client.get("/api/stats")
+
+        self.assertEqual(response.status_code, 401)
+
+    async def test_the_frontend_is_served_without_shadowing_the_api(self) -> None:
+        page = await self.client.get("/")
+        script = await self.client.get("/admin-core.js")
+        api = await self.client.get("/api/guilds")
+
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("<title>BotChan Admin</title>", page.text)
+        self.assertEqual(script.status_code, 200)
+        self.assertEqual(api.status_code, 401)
+        self.assertEqual(api.json()["code"], "AUTHENTICATION_REQUIRED")
 
 
 if __name__ == "__main__":

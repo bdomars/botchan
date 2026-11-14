@@ -5,18 +5,25 @@ application as the user app, but only Discord users listed in the
 ``operators`` table get a session, and that listing is checked again on every
 request, so revoking an operator takes effect immediately.
 
-Routes mirror the user API's paths and response shapes so the same editor can
-be pointed at either.
+Guild routes mirror the user API's paths and config shapes. Listing is
+searched and paged on the server, so the frontend never needs every guild at
+once; today the guild list comes from Discord, and a table maintained by the
+bot can replace it later without changing the API.
+
+The operator frontend in ``web_admin/`` is served from ``/``.
 """
 
 import logging
 from datetime import timedelta
+from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Header, Query, Request
-from fastapi.responses import JSONResponse, RedirectResponse
-from sqlalchemy import select
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from botchan_api.admin.settings import AdminSettings
@@ -47,7 +54,46 @@ ADMIN_SESSION_COOKIE = "botchan_admin_session"
 ADMIN_OAUTH_STATE_COOKIE = "botchan_admin_oauth_state"
 ADMIN_STATE_SALT = "botchan-admin-oauth-state"
 MAX_VERSIONS_PAGE = 200
+MAX_GUILDS_PAGE = 200
+RECENT_CHANGES = 15
+# Listing thousands of guilds takes several Discord requests, and the admin
+# views don't need it fresher than this.
+ADMIN_GUILD_CACHE_SECONDS = 120
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+ADMIN_WEB_ROOT = PROJECT_ROOT / "web_admin"
 log = logging.getLogger("botchan.admin")
+
+
+class GuildFilter(StrEnum):
+    ALL = "all"
+    CONFIGURED = "configured"
+    UNCONFIGURED = "unconfigured"
+    NEEDS_PERMISSIONS = "needs_permissions"
+    ORPHANED = "orphaned"
+
+
+def matches_filter(summary: dict[str, Any], status: GuildFilter) -> bool:
+    match status:
+        case GuildFilter.ALL:
+            return True
+        case GuildFilter.CONFIGURED:
+            return summary["installed"] and summary["configured"]
+        case GuildFilter.UNCONFIGURED:
+            return summary["installed"] and not summary["configured"]
+        case GuildFilter.NEEDS_PERMISSIONS:
+            return summary["needs_permissions"]
+        case GuildFilter.ORPHANED:
+            return not summary["installed"]
+
+
+def matches_query(summary: dict[str, Any], query: str) -> bool:
+    """IDs match by prefix, names by case-insensitive substring."""
+    query = query.strip()
+    if not query:
+        return True
+    if query.isdigit() and summary["id"].startswith(query):
+        return True
+    return query.casefold() in (summary["name"] or "").casefold()
 
 
 def create_admin_app(settings: AdminSettings | None = None, discord: Any = None) -> FastAPI:
@@ -66,7 +112,9 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
 
     install_common(app)
     install_probes(app, session_factory, log)
-    bot_guilds: TimedCache[list[dict[str, Any]]] = TimedCache(lambda: discord.bot_guild_list())
+    bot_guilds: TimedCache[list[dict[str, Any]]] = TimedCache(
+        lambda: discord.bot_guild_list(), ADMIN_GUILD_CACHE_SECONDS
+    )
     db_session = session_dependency(session_factory)
     DB = Annotated[AsyncSession, Depends(db_session)]
 
@@ -102,9 +150,52 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
         if not any(str(guild["id"]) == guild_id for guild in await bot_guilds.get()):
             raise error(409, "BOT_NOT_INSTALLED", "BotChan is not in this guild.")
 
-    @app.get("/", include_in_schema=False)
-    async def root() -> dict[str, Any]:
-        return {"service": "botchan-admin", "login": "/auth/discord"}
+    def summarize(guild_id: str, guild: dict[str, Any] | None, row: Any | None) -> dict[str, Any]:
+        """One guild as the admin views show it. ``row`` needs guild_id, revision, updated_at."""
+        try:
+            granted = int(guild.get("permissions", 0)) if guild else 0
+        except TypeError, ValueError:
+            granted = 0
+        return {
+            "id": guild_id,
+            "name": guild["name"] if guild else None,
+            "icon_url": icon_url(guild_id, guild.get("icon")) if guild else None,
+            "member_count": guild.get("approximate_member_count") if guild else None,
+            "installed": guild is not None,
+            "needs_permissions": guild is not None and not has_bot_permissions(granted),
+            "configured": row is not None,
+            "revision": row.revision if row else None,
+            "updated_at": row.updated_at.isoformat() if row else None,
+            "install_url": install_url(base.discord_client_id, guild_id),
+        }
+
+    async def all_summaries(db: AsyncSession) -> list[dict[str, Any]]:
+        """Every guild the bot is in plus every stored config, named guilds first."""
+        installed = {str(guild["id"]): guild for guild in await bot_guilds.get()}
+        rows = {
+            row.guild_id: row
+            for row in (
+                await db.execute(
+                    select(
+                        GuildConfigRow.guild_id,
+                        GuildConfigRow.revision,
+                        GuildConfigRow.updated_at,
+                    )
+                )
+            ).all()
+        }
+        result = [
+            summarize(guild_id, installed.get(guild_id), rows.get(guild_id))
+            for guild_id in installed.keys() | rows.keys()
+        ]
+
+        # Named guilds alphabetically, then guilds the bot has left.
+        def sort_key(item: dict[str, Any]) -> tuple[bool, str, str]:
+            name = item["name"]
+            return (name is None, str(name or "").casefold(), str(item["id"]))
+
+        result.sort(key=sort_key)
+        return result
 
     @app.get("/auth/discord")
     async def discord_login() -> RedirectResponse:
@@ -220,42 +311,108 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
         return response
 
     @app.get("/api/guilds")
-    async def guild_list(db: DB, _operator: OperatorSession) -> dict[str, Any]:
-        """Every guild the bot is in, plus every guild that has a stored config.
+    async def guild_list(
+        db: DB,
+        _operator: OperatorSession,
+        q: Annotated[str, Query(max_length=100)] = "",
+        status: GuildFilter = GuildFilter.ALL,
+        limit: Annotated[int, Query(ge=1, le=MAX_GUILDS_PAGE)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> dict[str, Any]:
+        """Guilds the bot is in and guilds with a stored config, searched and paged.
 
-        A config whose guild the bot has left still shows up, with no name.
+        ``q`` matches a guild ID by prefix or a name by substring. A config
+        whose guild the bot has left has no name, and sorts last.
         """
-        installed = {str(guild["id"]): guild for guild in await bot_guilds.get()}
-        rows = {row.guild_id: row for row in (await db.scalars(select(GuildConfigRow))).all()}
-        result = []
-        for guild_id in installed.keys() | rows.keys():
-            guild = installed.get(guild_id)
-            row = rows.get(guild_id)
-            try:
-                granted = int(guild.get("permissions", 0)) if guild else 0
-            except TypeError, ValueError:
-                granted = 0
-            result.append(
-                {
-                    "id": guild_id,
-                    "name": guild["name"] if guild else None,
-                    "icon_url": icon_url(guild_id, guild.get("icon")) if guild else None,
-                    "installed": guild is not None,
-                    "needs_permissions": guild is not None and not has_bot_permissions(granted),
-                    "configured": row is not None,
-                    "revision": row.revision if row else None,
-                    "updated_at": row.updated_at.isoformat() if row else None,
-                    "install_url": install_url(base.discord_client_id, guild_id),
-                }
+        matching = [
+            summary
+            for summary in await all_summaries(db)
+            if matches_filter(summary, status) and matches_query(summary, q)
+        ]
+        return {
+            "guilds": matching[offset : offset + limit],
+            "total": len(matching),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @app.get("/api/guilds/{guild_id}")
+    async def guild_detail(guild_id: str, db: DB, _operator: OperatorSession) -> dict[str, Any]:
+        checked_guild_id(guild_id)
+        guild = next((item for item in await bot_guilds.get() if str(item["id"]) == guild_id), None)
+        row = (
+            await db.execute(
+                select(
+                    GuildConfigRow.guild_id, GuildConfigRow.revision, GuildConfigRow.updated_at
+                ).where(GuildConfigRow.guild_id == guild_id)
             )
+        ).first()
+        if guild is None and row is None:
+            raise error(
+                404, "GUILD_NOT_FOUND", "BotChan is not in this guild and has no config for it."
+            )
+        return summarize(guild_id, guild, row)
 
-        # Named guilds alphabetically, then guilds the bot has left.
-        def sort_key(item: dict[str, Any]) -> tuple[bool, str, str]:
-            name = item["name"]
-            return (name is None, str(name or "").casefold(), str(item["id"]))
-
-        result.sort(key=sort_key)
-        return {"guilds": result}
+    @app.get("/api/stats")
+    async def stats(db: DB, _operator: OperatorSession) -> dict[str, Any]:
+        summaries = await all_summaries(db)
+        installed = [summary for summary in summaries if summary["installed"]]
+        week_ago = now() - timedelta(days=7)
+        revisions, by_operator, last_week = (
+            await db.execute(
+                select(
+                    func.count(),
+                    func.count().filter(GuildConfigVersion.as_operator),
+                    func.count().filter(GuildConfigVersion.created_at >= week_ago),
+                )
+            )
+        ).one()
+        pools = await db.scalar(
+            select(
+                func.coalesce(
+                    func.sum(func.jsonb_array_length(GuildConfigRow.document["channel_pools"])), 0
+                )
+            )
+        )
+        names = {summary["id"]: summary["name"] for summary in summaries}
+        recent = (
+            await db.scalars(
+                select(GuildConfigVersion)
+                .order_by(GuildConfigVersion.created_at.desc())
+                .limit(RECENT_CHANGES)
+            )
+        ).all()
+        return {
+            "guilds": {
+                "installed": len(installed),
+                "configured": sum(1 for s in installed if s["configured"]),
+                "unconfigured": sum(1 for s in installed if not s["configured"]),
+                "needs_permissions": sum(1 for s in installed if s["needs_permissions"]),
+                "orphaned": sum(1 for s in summaries if not s["installed"]),
+                "members": sum(s["member_count"] or 0 for s in installed),
+            },
+            "pools": int(pools or 0),
+            "revisions": {
+                "total": revisions,
+                "by_operator": by_operator,
+                "last_7_days": last_week,
+            },
+            "operators": await db.scalar(select(func.count()).select_from(Operator)),
+            "recent_changes": [
+                {
+                    "guild_id": version.guild_id,
+                    "guild_name": names.get(version.guild_id),
+                    "revision": version.revision,
+                    "editor": {
+                        "id": version.editor_discord_user_id,
+                        "name": version.editor_name,
+                    },
+                    "as_operator": version.as_operator,
+                    "created_at": version.created_at.isoformat(),
+                }
+                for version in recent
+            ],
+        }
 
     @app.get("/api/guilds/{guild_id}/config")
     async def get_config(guild_id: str, db: DB, _operator: OperatorSession) -> JSONResponse:
@@ -325,6 +482,7 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
                         "name": version.editor_name,
                     },
                     "as_operator": version.as_operator,
+                    "pool_count": len(version.document.get("channel_pools", [])),
                     "created_at": version.created_at.isoformat(),
                 }
                 for version in versions
@@ -350,4 +508,10 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
             "created_at": version.created_at.isoformat(),
         }
 
+    @app.get("/botchan.png", include_in_schema=False)
+    async def logo() -> FileResponse:
+        return FileResponse(PROJECT_ROOT / "botchan.png")
+
+    # Last, so the API and auth routes above take precedence.
+    app.mount("/", StaticFiles(directory=ADMIN_WEB_ROOT, html=True), name="admin-web")
     return app

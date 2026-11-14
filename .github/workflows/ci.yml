@@ -52,7 +52,7 @@ jobs:
       - run: uv run ty check
       - run: uv run python -m compileall -q botchan botchan_api test_*.py
       - run: uv run python -m unittest -v
-      - run: node --test web/test_config_core.js
+      - run: node --test web/test_config_core.js web_admin/test_admin_core.js
 
   publish:
     needs: test

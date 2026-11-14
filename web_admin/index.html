@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="robots" content="noindex, nofollow">
+        <title>BotChan Admin</title>
+        <link rel="icon" href="/botchan.png">
+        <link rel="stylesheet" href="admin.css">
+        <script
+            defer
+            src="https://cdn.jsdelivr.net/npm/vue@3.5.40/dist/vue.global.prod.js"
+            onerror="document.getElementById('boot-error').hidden = false"
+        ></script>
+        <script defer src="admin-core.js"></script>
+        <script defer src="admin.js"></script>
+    </head>
+    <body>
+        <noscript><p class="boot-error">JavaScript is required.</p></noscript>
+        <p id="boot-error" class="boot-error" hidden>
+            The admin app could not start: Vue did not load from the CDN.
+        </p>
+
+        <div id="app" v-cloak>
+            <header class="topbar">
+                <a class="brand" href="#/">
+                    <img src="/botchan.png" alt="">
+                    <span>BotChan <b>admin</b></span>
+                </a>
+                <nav v-if="authenticated" class="nav">
+                    <a href="#/" :class="{ active: route.name === 'overview' }">Overview</a>
+                    <a href="#/guilds" :class="{ active: route.name !== 'overview' }">Guilds</a>
+                </nav>
+                <form v-if="authenticated" class="lookup" role="search" @submit.prevent="lookup">
+                    <input
+                        v-model="lookupText"
+                        type="search"
+                        placeholder="Guild ID or name"
+                        aria-label="Look up a guild by ID or name"
+                        spellcheck="false"
+                    >
+                </form>
+                <div v-if="authenticated" class="who">
+                    <span class="badge badge-operator" title="Every save here is recorded as an operator edit">operator</span>
+                    <span class="muted">{{ session.user.name }}</span>
+                    <button type="button" class="link" @click="logout">Log out</button>
+                </div>
+            </header>
+
+            <p v-if="pageError" class="alert" role="alert">
+                {{ pageError }}
+                <button type="button" class="link" @click="pageError = ''">dismiss</button>
+            </p>
+
+            <main v-if="booting" class="content"><p class="muted">Loading…</p></main>
+
+            <main v-else-if="!authenticated" class="content login">
+                <h1>Operators only</h1>
+                <p class="muted">Log in with a Discord account that has been granted operator access.</p>
+                <p v-if="authError" class="alert-inline">{{ authError }}</p>
+                <a class="button primary" href="/auth/discord">Log in with Discord</a>
+            </main>
+
+            <!-- Overview -->
+            <main v-else-if="route.name === 'overview'" class="content">
+                <div class="heading">
+                    <h1>Overview</h1>
+                    <button type="button" class="button" :disabled="stats.loading" @click="loadStats">Refresh</button>
+                </div>
+                <p v-if="stats.loading && !stats.data" class="muted">Loading…</p>
+                <template v-if="stats.data">
+                    <section class="tiles">
+                        <a class="tile" href="#/guilds">
+                            <span class="tile-value">{{ number(stats.data.guilds.installed) }}</span>
+                            <span class="tile-label">installs</span>
+                        </a>
+                        <a class="tile" href="#/guilds?status=configured">
+                            <span class="tile-value">{{ number(stats.data.guilds.configured) }}</span>
+                            <span class="tile-label">configured</span>
+                        </a>
+                        <a class="tile" href="#/guilds?status=unconfigured">
+                            <span class="tile-value">{{ number(stats.data.guilds.unconfigured) }}</span>
+                            <span class="tile-label">installed, no config</span>
+                        </a>
+                        <a class="tile" :class="{ warn: stats.data.guilds.needs_permissions }" href="#/guilds?status=needs_permissions">
+                            <span class="tile-value">{{ number(stats.data.guilds.needs_permissions) }}</span>
+                            <span class="tile-label">missing permissions</span>
+                        </a>
+                        <a class="tile" href="#/guilds?status=orphaned">
+                            <span class="tile-value">{{ number(stats.data.guilds.orphaned) }}</span>
+                            <span class="tile-label">configs, bot removed</span>
+                        </a>
+                        <div class="tile">
+                            <span class="tile-value">{{ number(stats.data.guilds.members) }}</span>
+                            <span class="tile-label">members (approx.)</span>
+                        </div>
+                        <div class="tile">
+                            <span class="tile-value">{{ number(stats.data.pools) }}</span>
+                            <span class="tile-label">channel pools</span>
+                        </div>
+                        <div class="tile">
+                            <span class="tile-value">{{ number(stats.data.revisions.total) }}</span>
+                            <span class="tile-label">
+                                revisions · {{ number(stats.data.revisions.last_7_days) }} this week ·
+                                {{ number(stats.data.revisions.by_operator) }} by operators
+                            </span>
+                        </div>
+                        <div class="tile">
+                            <span class="tile-value">{{ number(stats.data.operators) }}</span>
+                            <span class="tile-label">operators</span>
+                        </div>
+                    </section>
+
+                    <h2>Recent changes</h2>
+                    <p v-if="!stats.data.recent_changes.length" class="muted">No saves yet.</p>
+                    <div class="scroll" v-else>
+                        <table class="grid">
+                            <thead>
+                                <tr><th>When</th><th>Guild</th><th class="num">Rev</th><th>Editor</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="change in stats.data.recent_changes" :key="change.guild_id + ':' + change.revision">
+                                    <td :title="change.created_at">{{ ago(change.created_at) }}</td>
+                                    <td>
+                                        <a :href="'#/guilds/' + change.guild_id">{{ change.guild_name || change.guild_id }}</a>
+                                        <span v-if="!change.guild_name" class="badge">bot removed</span>
+                                    </td>
+                                    <td class="num mono">{{ change.revision }}</td>
+                                    <td>
+                                        {{ change.editor.name }}
+                                        <span v-if="change.as_operator" class="badge badge-operator">operator</span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </template>
+            </main>
+
+            <!-- Guild search -->
+            <main v-else-if="route.name === 'guilds'" class="content">
+                <div class="heading">
+                    <h1>Guilds</h1>
+                    <span class="muted" v-if="guilds.data">{{ number(guilds.data.total) }} matching</span>
+                </div>
+                <div class="filters">
+                    <input
+                        :value="route.q"
+                        type="search"
+                        placeholder="Filter by name or ID prefix"
+                        aria-label="Filter guilds"
+                        spellcheck="false"
+                        @input="filterInput($event.target.value)"
+                    >
+                    <select :value="route.status" aria-label="Status" @change="go({ ...route, status: $event.target.value, offset: 0 })">
+                        <option value="all">All</option>
+                        <option value="configured">Configured</option>
+                        <option value="unconfigured">Installed, no config</option>
+                        <option value="needs_permissions">Missing permissions</option>
+                        <option value="orphaned">Bot removed (config left)</option>
+                    </select>
+                </div>
+                <p v-if="guilds.loading && !guilds.data" class="muted">Loading…</p>
+                <template v-if="guilds.data">
+                    <p v-if="!guilds.data.guilds.length" class="muted">No guilds match.</p>
+                    <div class="scroll" v-else>
+                        <table class="grid" :class="{ stale: guilds.loading }">
+                            <thead>
+                                <tr>
+                                    <th>Guild</th><th>ID</th><th class="num">Members</th>
+                                    <th>Status</th><th class="num">Rev</th><th>Updated</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="guild in guilds.data.guilds" :key="guild.id" class="clickable" @click="go({ name: 'guild', guildId: guild.id })">
+                                    <td>
+                                        <a :href="'#/guilds/' + guild.id" @click.stop>
+                                            <img v-if="guild.icon_url" :src="guild.icon_url" alt="" class="icon">
+                                            {{ guild.name || "—" }}
+                                        </a>
+                                    </td>
+                                    <td class="mono muted">{{ guild.id }}</td>
+                                    <td class="num">{{ guild.member_count == null ? "" : number(guild.member_count) }}</td>
+                                    <td><span v-for="badge in statusBadges(guild)" :key="badge.text" class="badge" :class="badge.kind">{{ badge.text }}</span></td>
+                                    <td class="num mono">{{ guild.revision ?? "" }}</td>
+                                    <td :title="guild.updated_at || ''">{{ ago(guild.updated_at) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div v-if="guilds.data.total > guilds.data.limit" class="pager">
+                        <button type="button" class="button" :disabled="route.offset === 0" @click="page(-1)">← Prev</button>
+                        <span class="muted">
+                            {{ number(route.offset + 1) }}–{{ number(Math.min(route.offset + guilds.data.limit, guilds.data.total)) }}
+                            of {{ number(guilds.data.total) }}
+                        </span>
+                        <button type="button" class="button" :disabled="route.offset + guilds.data.limit >= guilds.data.total" @click="page(1)">Next →</button>
+                    </div>
+                </template>
+            </main>
+
+            <!-- One guild -->
+            <main v-else-if="route.name === 'guild'" class="content">
+                <p class="crumbs"><a href="#/guilds">Guilds</a> / <span class="mono">{{ route.guildId }}</span></p>
+                <p v-if="guild.notFound" class="alert-inline">BotChan is not in guild {{ route.guildId }} and has no config for it.</p>
+                <template v-if="guild.summary">
+                    <div class="heading">
+                        <h1>
+                            <img v-if="guild.summary.icon_url" :src="guild.summary.icon_url" alt="" class="icon icon-lg">
+                            {{ guild.summary.name || "Unknown guild" }}
+                        </h1>
+                        <span v-for="badge in statusBadges(guild.summary)" :key="badge.text" class="badge" :class="badge.kind">{{ badge.text }}</span>
+                    </div>
+                    <dl class="facts">
+                        <div><dt>ID</dt><dd class="mono">{{ guild.summary.id }}</dd></div>
+                        <div v-if="guild.summary.member_count != null"><dt>Members</dt><dd>{{ number(guild.summary.member_count) }}</dd></div>
+                        <div><dt>Revision</dt><dd class="mono">{{ guild.summary.revision ?? "none" }}</dd></div>
+                        <div v-if="guild.summary.updated_at"><dt>Updated</dt><dd :title="guild.summary.updated_at">{{ ago(guild.summary.updated_at) }}</dd></div>
+                        <div v-if="guild.summary.needs_permissions || !guild.summary.installed">
+                            <dt>Install link</dt>
+                            <dd><a :href="guild.summary.install_url" target="_blank" rel="noopener">re-authorize</a></dd>
+                        </div>
+                    </dl>
+
+                    <div class="columns">
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2>
+                                    Config
+                                    <span v-if="editor.editing" class="badge badge-warn">editing</span>
+                                    <span v-else class="badge">read-only</span>
+                                </h2>
+                                <div class="actions">
+                                    <template v-if="!editor.editing">
+                                        <button type="button" class="button" @click="copyText(editor.text)">Copy</button>
+                                        <button
+                                            type="button"
+                                            class="button primary"
+                                            :disabled="!guild.summary.installed"
+                                            :title="guild.summary.installed ? '' : 'BotChan is not in this guild, so its config cannot be saved'"
+                                            @click="startEditing"
+                                        >Edit</button>
+                                    </template>
+                                    <template v-else>
+                                        <button type="button" class="button" @click="formatEditor">Format</button>
+                                        <button type="button" class="button" @click="cancelEditing">Cancel</button>
+                                        <button type="button" class="button primary" :disabled="!editorParse.ok || !editorDirty || editor.saving" @click="saveEditor">
+                                            {{ editor.saving ? "Saving…" : "Save" }}
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
+                            <textarea
+                                ref="editor"
+                                v-model="editor.text"
+                                class="json"
+                                :class="{ editing: editor.editing, invalid: editor.editing && !editorParse.ok }"
+                                :readonly="!editor.editing"
+                                spellcheck="false"
+                                autocomplete="off"
+                                aria-label="Guild config JSON"
+                                :rows="Math.min(Math.max(editor.text.split('\n').length + 1, 8), 40)"
+                                @keydown="editorKeydown"
+                            ></textarea>
+                            <p v-if="editor.editing && !editorParse.ok" class="error">{{ editorParse.error }}</p>
+                            <p v-if="editor.error" class="error" role="alert">{{ editor.error }}</p>
+                            <p v-if="editor.editing" class="hint muted">
+                                Sent as the PUT body. <span class="mono">base_name</span> is filled in from Discord on save.
+                                Every pool needs a <span class="mono">base_channel_id</span> from the channel list.
+                                Ctrl+S saves.
+                            </p>
+                        </section>
+
+                        <section class="panel">
+                            <div class="panel-head"><h2>Voice channels</h2></div>
+                            <p v-if="!guild.summary.installed" class="muted">BotChan is not in this guild.</p>
+                            <p v-else-if="channels.loading" class="muted">Loading…</p>
+                            <p v-else-if="channels.error" class="error">{{ channels.error }}</p>
+                            <div class="scroll" v-else-if="channels.list">
+                                <table class="grid compact">
+                                    <thead><tr><th>Name</th><th>ID</th></tr></thead>
+                                    <tbody>
+                                        <tr v-for="channel in channels.list" :key="channel.id" :class="{ highlight: baseChannelIds.has(channel.id) }">
+                                            <td>
+                                                {{ channel.name }}
+                                                <span v-if="channel.category" class="muted small">· {{ channel.category }}</span>
+                                            </td>
+                                            <td><button type="button" class="link mono" title="Copy ID" @click="copyText(channel.id)">{{ channel.id }}</button></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </div>
+
+                    <section class="panel">
+                        <div class="panel-head"><h2>Revisions</h2></div>
+                        <p v-if="!versions.list.length && !versions.loading" class="muted">Never saved.</p>
+                        <div class="scroll" v-if="versions.list.length">
+                            <table class="grid">
+                                <thead>
+                                    <tr><th class="num">Rev</th><th>When</th><th>Editor</th><th class="num">Pools</th><th></th></tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="version in versions.list" :key="version.revision" :class="{ highlight: viewing && viewing.revision === version.revision }">
+                                        <td class="num mono">
+                                            {{ version.revision }}
+                                            <span v-if="version.revision === guild.summary.revision" class="badge badge-ok">current</span>
+                                        </td>
+                                        <td :title="version.created_at">{{ ago(version.created_at) }}</td>
+                                        <td>
+                                            {{ version.editor.name }}
+                                            <span class="muted mono small">{{ version.editor.id }}</span>
+                                            <span v-if="version.as_operator" class="badge badge-operator">operator</span>
+                                        </td>
+                                        <td class="num">{{ version.pool_count ?? "" }}</td>
+                                        <td>
+                                            <div class="actions">
+                                                <button type="button" class="button small" @click="viewRevision(version.revision)">View</button>
+                                                <button
+                                                    type="button"
+                                                    class="button small danger"
+                                                    :disabled="version.revision === guild.summary.revision || !guild.summary.installed || editor.editing || editor.saving"
+                                                    @click="rollback(version.revision)"
+                                                >Roll back</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <button v-if="versions.nextBefore" type="button" class="button" :disabled="versions.loading" @click="loadVersions(true)">Older revisions</button>
+
+                        <div v-if="viewing" class="viewer">
+                            <div class="panel-head">
+                                <h3>Revision {{ viewing.revision }} <span class="muted small">{{ viewing.created_at }}</span></h3>
+                                <div class="actions">
+                                    <label class="toggle"><input v-model="showDiff" type="checkbox"> diff against current</label>
+                                    <button type="button" class="button" @click="copyText(viewingText)">Copy</button>
+                                    <button type="button" class="button" @click="viewing = null">Close</button>
+                                </div>
+                            </div>
+                            <pre v-if="!showDiff" class="json">{{ viewingText }}</pre>
+                            <pre v-else class="json diff"><span
+                                v-for="(line, index) in viewingDiff"
+                                :key="index"
+                                :class="{ add: line.op === '+', del: line.op === '-' }"
+                            >{{ line.op }} {{ line.text }}
+</span></pre>
+                            <p v-if="showDiff" class="hint muted">What rolling back would change: − lines leave the current config, + lines come from revision {{ viewing.revision }}.</p>
+                        </div>
+                    </section>
+                </template>
+            </main>
+
+            <div v-if="toast" class="toast" role="status">{{ toast }}</div>
+        </div>
+    </body>
+</html>
