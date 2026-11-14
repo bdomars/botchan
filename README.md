@@ -255,7 +255,7 @@ Run checks:
 
 ```bash
 uv run ty check
-uv run python -m compileall -q botchan botchan_api test_*.py
+uv run python -m compileall -q botchan botchan_api tests
 uv run python -m unittest -v
 node --test web/test_config_core.js
 ```
