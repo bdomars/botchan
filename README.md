@@ -135,8 +135,8 @@ Do not commit real bot tokens. If a token is ever exposed, rotate it in the Disc
 
 The separate FastAPI service serves the editor, authenticates administrators through
 Discord OAuth2, lists servers where they have Manage Server permission, and stores
-revisioned guild configuration in PostgreSQL. The page loads Vue from a CDN, so the
-browser also needs a network connection.
+revisioned guild configuration in PostgreSQL. The editor is a Vue app built ahead of
+time and served by the API itself (see [Frontends](#frontends)).
 
 Required API environment variables:
 

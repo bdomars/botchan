@@ -118,10 +118,3 @@ rather than reporting the suite as green.
   don't add dependencies casually, and keep the two frontends separate.
 - **Secrets**: never commit tokens or `.env`; real config comes from env vars.
 - Python ≥ 3.14, `uv` for everything (no bare `pip`), Node 24 for frontends.
-
-## Known stale bits
-
-- `botchan.config.example.json` predates database-backed config (it uses
-  `guild_id` ints and no `base_channel_id`); the bot no longer reads it.
-- The README's API section still says the page "loads Vue from a CDN"; the
-  frontends are now Vite builds served from `dist/`.

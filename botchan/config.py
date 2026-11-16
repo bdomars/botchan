@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-import json
-import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ValidationError,
     field_validator,
     model_validator,
 )
 
-DEFAULT_RUNTIME_CONFIG_PATH = "botchan.config.json"
 # Discord rejects longer channel names.
 MAX_CHANNEL_NAME_LENGTH = 100
 # A short idle timeout turns everyone hopping in and out of a voice channel
@@ -27,11 +22,6 @@ MIN_IDLE_SECONDS = 60
 
 def is_snowflake(value: str) -> bool:
     return value.isdigit() and value[0] != "0" and len(value) <= 20
-
-
-@dataclass(frozen=True)
-class RuntimeConfig:
-    guilds: dict[int, GuildSpec]
 
 
 @dataclass(frozen=True)
@@ -135,44 +125,3 @@ class GuildConfig(BaseModel):
             guild_id=self.guild_id,
             channel_pools=[pool.to_spec() for pool in self.channel_pools],
         )
-
-
-class RuntimeConfigFile(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    guilds: list[GuildConfig] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_unique_guild_ids(self) -> Self:
-        seen: set[int] = set()
-        for guild in self.guilds:
-            if guild.guild_id in seen:
-                raise ValueError(f"Duplicate guild_id: {guild.guild_id}")
-            seen.add(guild.guild_id)
-        return self
-
-
-def parse_runtime_config_data(data: object) -> RuntimeConfig:
-    try:
-        config = RuntimeConfigFile.model_validate(data)
-    except ValidationError as exc:
-        raise RuntimeError(f"Invalid config: {exc}") from exc
-
-    return RuntimeConfig(guilds={guild.guild_id: guild.to_spec() for guild in config.guilds})
-
-
-def load_runtime_config() -> RuntimeConfig:
-    config_path = Path(os.environ.get("BOTCHAN_CONFIG", DEFAULT_RUNTIME_CONFIG_PATH))
-    return load_runtime_config_file(config_path)
-
-
-def load_runtime_config_file(path: Path) -> RuntimeConfig:
-    try:
-        with path.open(encoding="utf-8") as config_file:
-            data = json.load(config_file)
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"Config file not found: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Config file is not valid JSON: {path}") from exc
-
-    return parse_runtime_config_data(data)
