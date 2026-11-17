@@ -181,6 +181,13 @@ Configuration saves use optimistic ETags and emit a PostgreSQL notification on
 the source of truth; notifications are only reload hints and are not a durable queue.
 The bot loads a complete snapshot at startup and after listener reconnections.
 
+Which servers BotChan is in, and with what permissions, flows the other way. The
+bot writes them to the `bot_guilds` table as it joins and leaves servers and as
+its roles change, and rewrites the whole table every ten minutes to catch
+anything it missed. Both APIs read that table instead of asking Discord, so a
+server the bot was just added to can take a moment to show as installed. A
+server the bot leaves keeps its row, marked as left.
+
 ## Admin API
 
 A second, operator-only app, `botchan_api.admin.main:app`, lets the people who run
@@ -313,7 +320,9 @@ table is in `web_admin/src/routes.ts`, and the views load lazily.
 
 The bot must be upgraded before the API. An older bot does not know about
 `base_channel_id`, so it ignores configurations saved by the newer editor and
-keeps running on the ones it loaded before.
+keeps running on the ones it loaded before. Likewise, an API that reads
+`bot_guilds` shows every server as not installed until a bot that writes the
+table has started; it fills the table within seconds of connecting.
 
 ## License
 

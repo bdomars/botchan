@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, false
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, false
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -76,3 +76,23 @@ class AdminSession(Base):
     csrf_token: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class BotGuild(Base):
+    """A server the bot is or was in. Only the bot writes this table.
+
+    Rows are kept after the bot leaves, with ``present`` cleared, so the admin
+    app can still name a guild whose config was left behind.
+    """
+
+    __tablename__ = "bot_guilds"
+
+    guild_id: Mapped[str] = mapped_column(String(20), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    icon: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The bot's guild-wide permissions, as Discord computes them for its roles.
+    permissions: Mapped[int] = mapped_column(BigInteger)
+    member_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    present: Mapped[bool] = mapped_column(Boolean, index=True)
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -16,6 +16,7 @@ from botchan.database_config import (
     GuildConfigChange,
     PostgresConfigSource,
 )
+from botchan.guild_registry import GuildRegistry
 from botchan.rate_limits import rate_limit_trace
 from botchan.reconciliation import (
     ReconcilePlan,
@@ -33,6 +34,10 @@ from botchan.reconciliation import (
 log = logging.getLogger("botchan")
 
 CLEANUP_INTERVAL_SECONDS = 30
+# Guild joins, leaves and permission changes are written as they happen; the
+# full rewrite catches what the gateway doesn't report (member counts, roles
+# given to the bot) and any write that failed.
+GUILD_REGISTRY_SYNC_MINUTES = 10
 # discord.py waits out rate limits by itself. A rename can wait ten minutes
 # (two per channel per ten minutes), and waiting inside a pass would hold the
 # guild lock that long, so renames and creates give up after this and a later
@@ -87,8 +92,15 @@ def pool_key(spec: ChannelPoolSpec) -> int | str:
     return spec.base_channel_id if spec.base_channel_id is not None else spec.base_name
 
 
-class BotChan(commands.Bot):
-    def __init__(self, config_source: PostgresConfigSource) -> None:
+# AutoShardedBot runs every shard in this one process. Discord requires shards
+# from 2,500 guilds; below that it recommends a single one, so this behaves
+# like a plain Bot until then.
+class BotChan(commands.AutoShardedBot):
+    def __init__(
+        self,
+        config_source: PostgresConfigSource,
+        guild_registry: GuildRegistry | None = None,
+    ) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True
@@ -101,6 +113,7 @@ class BotChan(commands.Bot):
         self.managed_guilds: dict[int, ManagedGuild] = {}
         self._config_revisions: dict[int, int] = {}
         self._config_source = config_source
+        self._guild_registry = guild_registry
         # Serializes passes within a guild, so two concurrent passes never both
         # create the same channel number. Locks are never removed: a pass may
         # still be waiting on one after its guild's config is deleted.
@@ -116,6 +129,9 @@ class BotChan(commands.Bot):
             self._apply_config_snapshot,
             self._apply_config_change,
         )
+        if self._guild_registry is not None:
+            await self._guild_registry.start()
+            self.sync_guild_registry.start()
         self.cleanup_empty_channels.start()
         # In a container the bot runs as PID 1, which ignores SIGTERM unless a
         # handler is installed, so `podman stop` would otherwise SIGKILL it.
@@ -128,14 +144,73 @@ class BotChan(commands.Bot):
 
     async def close(self) -> None:
         self.cleanup_empty_channels.cancel()
+        self.sync_guild_registry.cancel()
         try:
             await self._config_source.close()
+            if self._guild_registry is not None:
+                await self._guild_registry.close()
         finally:
             await super().close()
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s", self.user)
         await self.reconcile_all_guilds()
+
+    @tasks.loop(minutes=GUILD_REGISTRY_SYNC_MINUTES)
+    async def sync_guild_registry(self) -> None:
+        if self._guild_registry is None:
+            return
+        # discord.py ends the loop for good on most exceptions.
+        try:
+            count = await self._guild_registry.sync(lambda: self.guilds)
+        except Exception:
+            log.exception("Writing the guild list to the database failed")
+        else:
+            log.info("In %s guilds", count)
+
+    @sync_guild_registry.before_loop
+    async def before_sync_guild_registry(self) -> None:
+        await self.wait_until_ready()
+
+    async def _record_guild(self, guild: discord.Guild) -> None:
+        if self._guild_registry is None:
+            return
+        # The next full sync retries a failed write; it must not fail the event.
+        try:
+            await self._guild_registry.update(guild)
+        except Exception:
+            log.exception("Recording guild %s failed", guild.id)
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        log.info("Joined guild %s", guild.id)
+        await self._record_guild(guild)
+
+    async def on_guild_available(self, guild: discord.Guild) -> None:
+        await self._record_guild(guild)
+
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        log.info("Left guild %s", guild.id)
+        if self._guild_registry is None:
+            return
+        try:
+            await self._guild_registry.remove(guild.id)
+        except Exception:
+            log.exception("Recording that guild %s was left failed", guild.id)
+
+    async def on_guild_update(self, before: discord.Guild, after: discord.Guild) -> None:
+        if (before.name, before.icon) != (after.name, after.icon):
+            await self._record_guild(after)
+
+    # The bot's permissions come from its roles. Re-authorizing the bot with
+    # new permissions edits its managed role, so role events are the ones that
+    # matter; roles handed to the bot later are picked up by the full sync.
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role) -> None:
+        me = after.guild.me
+        if before.permissions != after.permissions and me is not None and after in me.roles:
+            await self._record_guild(after.guild)
+
+    async def on_guild_role_delete(self, role: discord.Role) -> None:
+        await self._record_guild(role.guild)
 
     async def on_voice_state_update(
         self,
@@ -511,7 +586,17 @@ class BotChan(commands.Bot):
 
     @tasks.loop(seconds=CLEANUP_INTERVAL_SECONDS)
     async def cleanup_empty_channels(self) -> None:
-        for guild_id in list(self.managed_guilds):
+        started = time.monotonic()
+        guild_ids = list(self.managed_guilds)
+        await self._cleanup_guilds(guild_ids)
+        # A pass longer than the interval means one process no longer keeps
+        # up with its guilds: the signal to look at splitting the shards.
+        elapsed = time.monotonic() - started
+        if elapsed > CLEANUP_INTERVAL_SECONDS:
+            log.warning("Cleanup pass over %s guilds took %.1f seconds", len(guild_ids), elapsed)
+
+    async def _cleanup_guilds(self, guild_ids: list[int]) -> None:
+        for guild_id in guild_ids:
             # discord.py stops the loop for good on most exceptions, so one
             # failing guild must not escape and end cleanup for every guild.
             try:

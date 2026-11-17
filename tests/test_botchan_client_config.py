@@ -94,7 +94,7 @@ class BotConfigRefreshTests(unittest.IsolatedAsyncioTestCase):
         bot = BotChan(config_source)
 
         with (
-            patch.object(commands.Bot, "close", AsyncMock()) as discord_close,
+            patch.object(commands.AutoShardedBot, "close", AsyncMock()) as discord_close,
             self.assertRaises(RuntimeError),
         ):
             await bot.close()
@@ -116,7 +116,7 @@ class BotConfigRefreshTests(unittest.IsolatedAsyncioTestCase):
         config_source = AsyncMock()
         bot = BotChan(config_source)
 
-        with patch.object(commands.Bot, "close", AsyncMock()) as discord_close:
+        with patch.object(commands.AutoShardedBot, "close", AsyncMock()) as discord_close:
             bot._on_sigterm()
             bot._on_sigterm()
             assert bot._shutdown_task is not None
@@ -124,6 +124,36 @@ class BotConfigRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         config_source.close.assert_awaited_once()
         discord_close.assert_awaited_once()
+
+    async def test_setup_hook_starts_the_guild_registry_and_close_closes_it(self) -> None:
+        registry = AsyncMock()
+        bot = BotChan(AsyncMock(), registry)
+
+        with (
+            patch.object(bot.cleanup_empty_channels, "start"),
+            patch.object(bot.sync_guild_registry, "start") as start_sync,
+            patch.object(asyncio.get_running_loop(), "add_signal_handler"),
+        ):
+            await bot.setup_hook()
+        registry.start.assert_awaited_once()
+        start_sync.assert_called_once()
+
+        with patch.object(commands.AutoShardedBot, "close", AsyncMock()):
+            await bot.close()
+        registry.close.assert_awaited_once()
+
+    async def test_a_failed_registry_write_does_not_fail_the_event(self) -> None:
+        registry = AsyncMock()
+        registry.update.side_effect = RuntimeError("database down")
+        registry.remove.side_effect = RuntimeError("database down")
+        bot = BotChan(AsyncMock(), registry)
+        guild = cast(Any, type("Guild", (), {"id": 111})())
+
+        with self.assertLogs("botchan", "ERROR") as logs:
+            await bot.on_guild_join(guild)
+            await bot.on_guild_remove(guild)
+
+        self.assertEqual(len(logs.records), 2)
 
 
 async def settle() -> None:

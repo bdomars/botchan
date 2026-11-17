@@ -45,9 +45,11 @@ class AdminAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         from botchan_api.admin.app import create_admin_app
         from botchan_api.admin.settings import AdminSettings
+        from botchan_api.common import now
         from botchan_api.guilds import BOT_PERMISSIONS
         from botchan_api.models import (
             AdminSession,
+            BotGuild,
             GuildConfigRow,
             GuildConfigVersion,
             OAuthSession,
@@ -61,24 +63,6 @@ class AdminAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         revoked_tokens = self.revoked_tokens
 
         class FakeDiscord:
-            async def bot_guild_list(_self):
-                return [
-                    {
-                        "id": INSTALLED_GUILD,
-                        "name": "Zebra Guild",
-                        "icon": "abc",
-                        "permissions": str(BOT_PERMISSIONS),
-                        "approximate_member_count": 40,
-                    },
-                    {
-                        "id": OTHER_GUILD,
-                        "name": "alpha guild",
-                        "icon": None,
-                        "permissions": "0",
-                        "approximate_member_count": 2,
-                    },
-                ]
-
             async def guild_channels(_self, _guild_id):
                 return [{"id": "223456789012345678", "type": 2, "name": "Games", "position": 0}]
 
@@ -117,8 +101,28 @@ class AdminAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 AdminSession,
                 Operator,
                 OAuthSession,
+                BotGuild,
             ):
                 await db.execute(delete(model))
+            timestamp = now()
+            # What the bot records: two guilds it is in, and one it has left.
+            for guild_id, name, icon, permissions, members, present in (
+                (INSTALLED_GUILD, "Zebra Guild", "abc", BOT_PERMISSIONS, 40, True),
+                (OTHER_GUILD, "alpha guild", None, 0, 2, True),
+                (ORPHANED_GUILD, "Gone Guild", None, BOT_PERMISSIONS, 9, False),
+            ):
+                db.add(
+                    BotGuild(
+                        guild_id=guild_id,
+                        name=name,
+                        icon=icon,
+                        permissions=permissions,
+                        member_count=members,
+                        present=present,
+                        left_at=None if present else timestamp,
+                        updated_at=timestamp,
+                    )
+                )
             await db.commit()
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app), base_url="http://admin.test"

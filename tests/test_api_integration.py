@@ -21,15 +21,11 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             create_app,
             now,
         )
-        from botchan_api.models import GuildConfigRow, GuildConfigVersion, OAuthSession
+        from botchan_api.models import BotGuild, GuildConfigRow, GuildConfigVersion, OAuthSession
         from botchan_api.settings import Settings
 
-        self.discord_calls = {"user_guilds": 0, "bot_guilds": 0}
+        self.discord_calls = {"user_guilds": 0}
         discord_calls = self.discord_calls
-        # Tests override this before their first request; the app caches the
-        # result for 30 seconds, so later mutations within a test are ignored.
-        self.bot_permissions = {"123456789012345678": BOT_PERMISSIONS}
-        bot_permissions = self.bot_permissions
         self.guild_channels = [
             {"id": "223456789012345678", "type": 2, "name": "Other Games", "position": 0},
             {"id": "223456789012345679", "type": 2, "name": "Other Games #2", "position": 1},
@@ -52,10 +48,6 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "icon": None,
                     }
                 ]
-
-            async def bot_guilds(_self):
-                discord_calls["bot_guilds"] += 1
-                return dict(bot_permissions)
 
             async def guild_channels(_self, _guild_id):
                 return [dict(channel) for channel in guild_channels]
@@ -84,6 +76,7 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await db.execute(delete(GuildConfigVersion))
             await db.execute(delete(GuildConfigRow))
             await db.execute(delete(OAuthSession))
+            await db.execute(delete(BotGuild))
             timestamp = now()
             db.add(
                 OAuthSession(
@@ -105,6 +98,27 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             transport=httpx.ASGITransport(app=self.app), base_url="http://test"
         )
         self.client.cookies.set("botchan_session", "browser-session")
+        await self.set_bot_permissions(BOT_PERMISSIONS)
+
+    async def set_bot_permissions(self, permissions: int, *, present: bool = True) -> None:
+        """Record the bot in the test guild, the way the bot itself would."""
+        from botchan_api.app import now
+        from botchan_api.models import BotGuild
+
+        async with self.app.state.session_factory() as db:
+            await db.merge(
+                BotGuild(
+                    guild_id="123456789012345678",
+                    name="Test Guild",
+                    icon=None,
+                    permissions=permissions,
+                    member_count=5,
+                    present=present,
+                    left_at=None if present else now(),
+                    updated_at=now(),
+                )
+            )
+            await db.commit()
 
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
@@ -129,7 +143,7 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_guild_list_flags_a_stale_permission_grant(self) -> None:
         # The grant BotChan shipped with before it synced channel permissions.
-        self.bot_permissions["123456789012345678"] = self.manage_channels_bit
+        await self.set_bot_permissions(self.manage_channels_bit)
 
         response = await self.client.get("/api/guilds")
 
@@ -138,7 +152,7 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(guild["needs_permissions"])
 
     async def test_guild_list_accepts_administrator_in_place_of_both(self) -> None:
-        self.bot_permissions["123456789012345678"] = self.administrator_bit
+        await self.set_bot_permissions(self.administrator_bit)
 
         response = await self.client.get("/api/guilds")
 
@@ -214,11 +228,20 @@ class ConfigAPIIntegrationTests(unittest.IsolatedAsyncioTestCase):
             headers={"X-CSRF-Token": "csrf-token", "If-None-Match": "*"},
         )
         self.assertEqual(stale.status_code, 412)
-        self.assertEqual(self.discord_calls, {"user_guilds": 2, "bot_guilds": 1})
+        self.assertEqual(self.discord_calls, {"user_guilds": 2})
         async with self.app.state.session_factory() as db:
             version_count = await db.scalar(select(func.count()).select_from(GuildConfigVersion))
         self.assertEqual(version_count, 1)
         await connection.close()
+
+    async def test_a_guild_the_bot_has_left_is_not_installed(self) -> None:
+        await self.set_bot_permissions(self.required_bits, present=False)
+
+        listed = await self.client.get("/api/guilds")
+        channels = await self.client.get("/api/guilds/123456789012345678/channels")
+
+        self.assertFalse(listed.json()["guilds"][0]["installed"])
+        self.assertEqual(channels.json()["code"], "BOT_NOT_INSTALLED")
 
     async def put(self, *base_channel_ids: str):
         return await self.client.put(

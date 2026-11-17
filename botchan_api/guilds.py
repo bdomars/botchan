@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Collection
 from typing import Any
 from urllib.parse import urlencode
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from botchan_api.common import error
 from botchan_api.discord_client import DiscordAPIError
+from botchan_api.models import BotGuild
 
 MANAGE_GUILD = 1 << 5
 ADMINISTRATOR = 1 << 3
@@ -19,7 +21,6 @@ MANAGE_CHANNELS = 1 << 4
 # pool is a permission edit, which Discord gates behind Manage Roles.
 MANAGE_ROLES = 1 << 28
 BOT_PERMISSIONS = MANAGE_CHANNELS | MANAGE_ROLES
-BOT_GUILD_CACHE_SECONDS = 30
 # Discord channel types.
 VOICE_CHANNEL = 2
 CATEGORY_CHANNEL = 4
@@ -104,35 +105,19 @@ async def guild_voice_channels(discord: Any, guild_id: str) -> list[dict[str, An
         ) from exc
 
 
-class TimedCache[T]:
-    """Shares one Discord lookup between requests for a short while."""
+async def installed_guilds(
+    db: AsyncSession, guild_ids: Collection[str] | None = None
+) -> dict[str, BotGuild]:
+    """The guilds the bot is in, as it last recorded them, by guild ID.
 
-    def __init__(
-        self, loader: Callable[[], Awaitable[T]], seconds: float = BOT_GUILD_CACHE_SECONDS
-    ) -> None:
-        self._loader = loader
-        self._seconds = seconds
-        self._value: T | None = None
-        self._expires_at = 0.0
-        self._lock = asyncio.Lock()
+    The bot keeps this table current from the gateway, so it needs no Discord
+    request. Pass ``guild_ids`` to look up only those.
+    """
+    query = select(BotGuild).where(BotGuild.present)
+    if guild_ids is not None:
+        query = query.where(BotGuild.guild_id.in_(list(guild_ids)))
+    return {guild.guild_id: guild for guild in (await db.scalars(query)).all()}
 
-    async def get(self) -> T:
-        """The cached value, loading it again once it is stale.
 
-        Raises APIError 503 when Discord cannot be reached.
-        """
-        if self._value is not None and time.monotonic() < self._expires_at:
-            return self._value
-        async with self._lock:
-            if self._value is not None and time.monotonic() < self._expires_at:
-                return self._value
-            try:
-                value = await self._loader()
-            except DiscordAPIError as exc:
-                log.exception("Discord bot installation check failed")
-                raise error(
-                    503, "DISCORD_UNAVAILABLE", "Bot installation could not be checked."
-                ) from exc
-            self._value = value
-            self._expires_at = time.monotonic() + self._seconds
-            return value
+async def is_installed(db: AsyncSession, guild_id: str) -> bool:
+    return guild_id in await installed_guilds(db, [guild_id])

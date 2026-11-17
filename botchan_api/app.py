@@ -24,18 +24,18 @@ from botchan_api.database import create_database
 from botchan_api.discord_client import DiscordAPIError, DiscordClient
 from botchan_api.guilds import (
     ADMINISTRATOR,
-    BOT_GUILD_CACHE_SECONDS,
     BOT_PERMISSIONS,
     CATEGORY_CHANNEL,
     MANAGE_CHANNELS,
     MANAGE_GUILD,
     MANAGE_ROLES,
     VOICE_CHANNEL,
-    TimedCache,
     guild_voice_channels,
     has_bot_permissions,
     icon_url,
     install_url,
+    installed_guilds,
+    is_installed,
     valid_snowflake,
     voice_channel_list,
 )
@@ -46,7 +46,6 @@ from botchan_api.settings import Settings
 # Re-exported for callers and tests that import them from here.
 __all__ = [
     "ADMINISTRATOR",
-    "BOT_GUILD_CACHE_SECONDS",
     "BOT_PERMISSIONS",
     "CATEGORY_CHANNEL",
     "MANAGE_CHANNELS",
@@ -89,7 +88,6 @@ def create_app(
 
     install_common(app)
     install_probes(app, session_factory, log)
-    bot_guilds: TimedCache[dict[str, int]] = TimedCache(lambda: discord.bot_guilds())
     db_session = session_dependency(session_factory)
 
     DB = Annotated[AsyncSession, Depends(db_session)]
@@ -167,7 +165,7 @@ def create_app(
         )
         if guild is None:
             raise error(403, "GUILD_ACCESS_DENIED", "You cannot manage this guild.")
-        if require_installed and guild_id not in await bot_guilds.get():
+        if require_installed and not await is_installed(db, guild_id):
             raise error(409, "BOT_NOT_INSTALLED", "Install BotChan before configuring this guild.")
         return guild
 
@@ -294,8 +292,8 @@ def create_app(
     @app.get("/api/guilds")
     async def guild_list(db: DB, oauth_session: AuthSession) -> dict[str, Any]:
         guilds = [g for g in await user_guilds(oauth_session, db, force=False) if manageable(g)]
-        bot_permissions = await bot_guilds.get()
         ids = [str(guild["id"]) for guild in guilds]
+        installed_by_id = await installed_guilds(db, ids)
         revisions = {
             row.guild_id: row.revision
             for row in (
@@ -306,8 +304,9 @@ def create_app(
         for guild in sorted(guilds, key=lambda item: item["name"].casefold()):
             guild_id = str(guild["id"])
             icon = guild.get("icon")
-            installed = guild_id in bot_permissions
-            granted = bot_permissions.get(guild_id, 0)
+            bot_guild = installed_by_id.get(guild_id)
+            installed = bot_guild is not None
+            granted = bot_guild.permissions if bot_guild is not None else 0
             # Re-authorizing an installed bot updates its permissions, so the
             # same install link doubles as the fix for a stale grant.
             needs_permissions = installed and not has_bot_permissions(granted)

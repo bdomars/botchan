@@ -27,13 +27,20 @@ deployables share one PostgreSQL database:
     creation back-off.
   - `database_config.py` – `PostgresConfigSource`: loads a full snapshot at start
     and after reconnects, `LISTEN`s on `botchan_config_changed` for reload hints.
+  - `guild_registry.py` – `GuildRegistry`: writes the `bot_guilds` table (which
+    servers the bot is in, its permissions) from gateway events, plus a full
+    rewrite every 10 minutes. The API reads that table and never pages Discord's
+    guild list.
   - `config.py` (specs, name limits), `rate_limits.py`, `settings.py` (env).
+  - `BotChan` is a `commands.AutoShardedBot`: all shards in one process. All
+    state is per guild, so splitting shards across processes later means
+    filtering config by `(guild_id >> 22) % shard_count`.
 - `botchan_api/` – FastAPI.
   - `app.py` user-facing app, `admin/` operator app (+ `admin/cli.py` for
     granting operators), `common.py` HTTP plumbing shared by both, `configs.py`
     save/ETag/`pg_notify`, `models.py` SQLAlchemy, `security.py` token
     encryption, `discord_client.py`, `guilds.py`.
-- `migrations/` – Alembic (`0001_backend`, `0002_admin`). Schema changes always
+- `migrations/` – Alembic (`0001_backend`, `0002_admin`, `0003_bot_guilds`). Schema changes always
   get a new migration.
 - `tests/` – a package; `unittest`, not pytest. `test_*_integration.py` need
   `BOTCHAN_TEST_DATABASE_URL` and are skipped without it.
@@ -59,6 +66,9 @@ without being asked:
   pauses, not rebuilt. Duplicate `#N` numbers ⇒ skip create/delete and warn.
 - A setting that can't be applied is attempted once, not retried in a loop.
 - The database is the source of truth; notifications are only hints.
+- Data flows both ways through Postgres: the API writes configs (bot reads),
+  the bot writes `bot_guilds` (API reads). Don't add bot-token REST calls to
+  the API for things the bot already knows from the gateway.
 - Config saves use optimistic concurrency (ETag = revision).
 - Bot and API share the config document, schema and notification payload, so
   they deploy together, and the bot must be upgraded before the API (older bots

@@ -7,8 +7,8 @@ request, so revoking an operator takes effect immediately.
 
 Guild routes mirror the user API's paths and config shapes. Listing is
 searched and paged on the server, so the frontend never needs every guild at
-once; today the guild list comes from Discord, and a table maintained by the
-bot can replace it later without changing the API.
+once. The guild list comes from the ``bot_guilds`` table the bot maintains, so
+listing makes no Discord requests.
 
 The operator frontend, built from ``web_admin/`` into ``web_admin/dist/``, is served from ``/``.
 """
@@ -40,14 +40,15 @@ from botchan_api.configs import ConfigWrite, config_response, save_config
 from botchan_api.database import create_database
 from botchan_api.discord_client import DiscordAPIError, DiscordClient
 from botchan_api.guilds import (
-    TimedCache,
     guild_voice_channels,
     has_bot_permissions,
     icon_url,
     install_url,
+    installed_guilds,
+    is_installed,
     valid_snowflake,
 )
-from botchan_api.models import AdminSession, GuildConfigRow, GuildConfigVersion, Operator
+from botchan_api.models import AdminSession, BotGuild, GuildConfigRow, GuildConfigVersion, Operator
 from botchan_api.security import Security
 
 ADMIN_SESSION_COOKIE = "botchan_admin_session"
@@ -56,9 +57,6 @@ ADMIN_STATE_SALT = "botchan-admin-oauth-state"
 MAX_VERSIONS_PAGE = 200
 MAX_GUILDS_PAGE = 200
 RECENT_CHANGES = 15
-# Listing thousands of guilds takes several Discord requests, and the admin
-# views don't need it fresher than this.
-ADMIN_GUILD_CACHE_SECONDS = 120
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # The console's production build: `npm run build` in web_admin/ writes it.
 ADMIN_WEB_ROOT = PROJECT_ROOT / "web_admin" / "dist"
@@ -113,9 +111,6 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
 
     install_common(app)
     install_probes(app, session_factory, log)
-    bot_guilds: TimedCache[list[dict[str, Any]]] = TimedCache(
-        lambda: discord.bot_guild_list(), ADMIN_GUILD_CACHE_SECONDS
-    )
     db_session = session_dependency(session_factory)
     DB = Annotated[AsyncSession, Depends(db_session)]
 
@@ -147,23 +142,22 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
             raise error(404, "GUILD_NOT_FOUND", "Guild not found.")
         return guild_id
 
-    async def require_installed(guild_id: str) -> None:
-        if not any(str(guild["id"]) == guild_id for guild in await bot_guilds.get()):
+    async def require_installed(db: AsyncSession, guild_id: str) -> None:
+        if not await is_installed(db, guild_id):
             raise error(409, "BOT_NOT_INSTALLED", "BotChan is not in this guild.")
 
-    def summarize(guild_id: str, guild: dict[str, Any] | None, row: Any | None) -> dict[str, Any]:
-        """One guild as the admin views show it. ``row`` needs guild_id, revision, updated_at."""
-        try:
-            granted = int(guild.get("permissions", 0)) if guild else 0
-        except TypeError, ValueError:
-            granted = 0
+    def summarize(guild_id: str, guild: BotGuild | None, row: Any | None) -> dict[str, Any]:
+        """One guild as the admin views show it. ``row`` needs guild_id, revision, updated_at.
+
+        ``guild`` is None unless the bot is in the guild now.
+        """
         return {
             "id": guild_id,
-            "name": guild["name"] if guild else None,
-            "icon_url": icon_url(guild_id, guild.get("icon")) if guild else None,
-            "member_count": guild.get("approximate_member_count") if guild else None,
+            "name": guild.name if guild else None,
+            "icon_url": icon_url(guild_id, guild.icon) if guild else None,
+            "member_count": guild.member_count if guild else None,
             "installed": guild is not None,
-            "needs_permissions": guild is not None and not has_bot_permissions(granted),
+            "needs_permissions": guild is not None and not has_bot_permissions(guild.permissions),
             "configured": row is not None,
             "revision": row.revision if row else None,
             "updated_at": row.updated_at.isoformat() if row else None,
@@ -172,7 +166,7 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
 
     async def all_summaries(db: AsyncSession) -> list[dict[str, Any]]:
         """Every guild the bot is in plus every stored config, named guilds first."""
-        installed = {str(guild["id"]): guild for guild in await bot_guilds.get()}
+        installed = await installed_guilds(db)
         rows = {
             row.guild_id: row
             for row in (
@@ -340,7 +334,7 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
     @app.get("/api/guilds/{guild_id}")
     async def guild_detail(guild_id: str, db: DB, _operator: OperatorSession) -> dict[str, Any]:
         checked_guild_id(guild_id)
-        guild = next((item for item in await bot_guilds.get() if str(item["id"]) == guild_id), None)
+        guild = (await installed_guilds(db, [guild_id])).get(guild_id)
         row = (
             await db.execute(
                 select(
@@ -421,9 +415,9 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
         return config_response(guild_id, await db.get(GuildConfigRow, guild_id))
 
     @app.get("/api/guilds/{guild_id}/channels")
-    async def channel_list(guild_id: str, _operator: OperatorSession) -> dict[str, Any]:
+    async def channel_list(guild_id: str, db: DB, _operator: OperatorSession) -> dict[str, Any]:
         checked_guild_id(guild_id)
-        await require_installed(guild_id)
+        await require_installed(db, guild_id)
         return {"channels": await guild_voice_channels(discord, guild_id)}
 
     @app.put("/api/guilds/{guild_id}/config")
@@ -438,7 +432,7 @@ def create_admin_app(settings: AdminSettings | None = None, discord: Any = None)
     ) -> JSONResponse:
         check_csrf(request, admin_session)
         checked_guild_id(guild_id)
-        await require_installed(guild_id)
+        await require_installed(db, guild_id)
         response = await save_config(
             db,
             discord,

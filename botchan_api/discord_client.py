@@ -100,35 +100,3 @@ class DiscordClient:
             headers={"Authorization": f"Bot {self.settings.discord_bot_token}"},
         )
         return await self._json(response)
-
-    async def bot_guild_list(self) -> list[dict[str, Any]]:
-        """Every guild the bot is in, as Discord describes them (id, name, icon, permissions)."""
-        result: list[dict[str, Any]] = []
-        after: str | None = None
-        while True:
-            # with_counts adds approximate_member_count to every guild.
-            params: dict[str, Any] = {"limit": 200, "with_counts": "true"}
-            if after is not None:
-                params["after"] = after
-            response = await self._request(
-                "GET",
-                f"{DISCORD_API}/users/@me/guilds",
-                params=params,
-                headers={"Authorization": f"Bot {self.settings.discord_bot_token}"},
-            )
-            page = await self._json(response)
-            result.extend(page)
-            if len(page) < 200:
-                return result
-            after = str(page[-1]["id"])
-
-    async def bot_guilds(self) -> dict[str, int]:
-        """Map each guild the bot is in to the permissions it holds there."""
-        result: dict[str, int] = {}
-        for guild in await self.bot_guild_list():
-            try:
-                permissions = int(guild.get("permissions", 0))
-            except TypeError, ValueError:
-                permissions = 0
-            result[str(guild["id"])] = permissions
-        return result
