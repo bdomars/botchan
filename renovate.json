@@ -46,8 +46,14 @@
       "allowedVersions": "<3.15"
     },
     {
-      "description": "Node majors are moved deliberately; @types/node follows the runtime major",
-      "matchPackageNames": ["node", "@types/node"],
+      "description": "Node majors are moved deliberately; @types/node follows the runtime major. Matched by depName because setup-node's node-version has a different packageName",
+      "matchDepNames": ["node", "@types/node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "TypeScript 7 drops the JS compiler API that vue-tsc loads (typescript/lib/tsc); wait for vue-tsc support",
+      "matchPackageNames": ["typescript"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
@@ -58,6 +64,12 @@
     {
       "groupName": "vite and vitest",
       "matchPackageNames": ["vite", "vitest", "@vitejs/plugin-vue"]
+    },
+    {
+      "description": "One PR per lockfile: parallel PRs editing uv.lock can merge cleanly in git yet leave duplicate entries uv refuses to parse",
+      "groupName": "python dependencies",
+      "matchManagers": ["pep621"],
+      "matchUpdateTypes": ["minor", "patch"]
     },
     {
       "groupName": "github actions",
