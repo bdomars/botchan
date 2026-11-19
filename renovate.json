@@ -3,7 +3,7 @@
   "extends": [
     "config:recommended",
     "helpers:pinGitHubActionDigests",
-    ":pinDigests"
+    "docker:pinDigests"
   ],
   "schedule": ["before 6am on monday"],
   "osvVulnerabilityAlerts": true,
