@@ -1,0 +1,73 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":pinDigests"
+  ],
+  "schedule": ["before 6am on monday"],
+  "osvVulnerabilityAlerts": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "customManagers": [
+    {
+      "description": "CloudNativePG's imageName field, which the kubernetes manager doesn't know",
+      "customType": "regex",
+      "managerFilePatterns": ["/^k8s/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "imageName:\\s*(?<depName>[^\\s:@]+):(?<currentValue>[^\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep the >= floors in pyproject.toml; only move the versions locked in uv.lock",
+      "matchManagers": ["pep621"],
+      "rangeStrategy": "update-lockfile"
+    },
+    {
+      "description": "Our own images are pinned per commit by the deploy workflow",
+      "matchPackageNames": ["ghcr.io/bdomars/**"],
+      "enabled": false
+    },
+    {
+      "description": "A Postgres major upgrade needs a data migration, not a tag bump",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres", "ghcr.io/cloudnative-pg/postgresql"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "Python minor versions are moved deliberately (requires-python, .python-version, images)",
+      "matchPackageNames": ["python"],
+      "allowedVersions": "<3.15"
+    },
+    {
+      "description": "Node majors are moved deliberately; @types/node follows the runtime major",
+      "matchPackageNames": ["node", "@types/node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "groupName": "vue",
+      "matchPackageNames": ["vue", "vue-router", "@vue/tsconfig", "vue-tsc"]
+    },
+    {
+      "groupName": "vite and vitest",
+      "matchPackageNames": ["vite", "vitest", "@vitejs/plugin-vue"]
+    },
+    {
+      "groupName": "github actions",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"]
+    },
+    {
+      "groupName": "docker base image digests",
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["digest", "pinDigest"]
+    }
+  ]
+}
